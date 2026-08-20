@@ -1,171 +1,180 @@
-"""Memory systems for FlowMind."""
+"""
+FlowMind Memory Systems
 
-from typing import Any, Dict, List, Optional
+Two types of memory for production AI applications:
+1. Short-term: Conversation context (sliding window)
+2. Long-term: Persistent storage with vector search
+"""
+
 from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+from datetime import datetime
 from collections import deque
-import time
 
 
 @dataclass
+class Message:
+    """A single message in conversation history."""
+    role: str  # user, assistant, system
+    content: str
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 class ShortTermMemory:
     """
-    Sliding window short-term memory for agents.
+    Short-term memory for conversation context.
     
     Features:
-    - Configurable window size
-    - Automatic eviction
-    - Context preservation
+    - Sliding window (keeps last N messages)
+    - Token counting for cost management
+    - Automatic truncation when limit reached
     """
-    max_messages: int = 10
-    messages: List[Dict[str, Any]] = field(default_factory=list)
     
-    def add(self, role: str, content: str, **metadata) -> None:
+    def __init__(self, max_messages: int = 20, max_tokens: int = 4000):
+        self.max_messages = max_messages
+        self.max_tokens = max_tokens
+        self.messages: deque[Message] = deque(maxlen=max_messages)
+        self._token_count = 0
+    
+    def add_message(self, role: str, content: str, 
+                    metadata: Optional[Dict[str, Any]] = None):
         """Add a message to memory."""
-        self.messages.append({
-            "role": role,
-            "content": content,
-            "timestamp": time.time(),
-            **metadata
-        })
+        msg = Message(
+            role=role,
+            content=content,
+            metadata=metadata or {}
+        )
+        self.messages.append(msg)
         
-        # Evict old messages
-        while len(self.messages) > self.max_messages:
-            self.messages.pop(0)
-            
-    def get_context(self) -> List[Dict[str, Any]]:
-        """Get full context for LLM."""
-        return self.messages.copy()
+        # Update token count (rough estimate: 1 token ≈ 4 chars)
+        self._token_count += len(content) // 4
         
-    def clear(self) -> None:
+        # Truncate if over token limit
+        while self._token_count > self.max_tokens and len(self.messages) > 2:
+            old_msg = self.messages.popleft()
+            self._token_count -= len(old_msg.content) // 4
+    
+    def get_messages(self) -> List[Dict[str, str]]:
+        """Get all messages in OpenAI format."""
+        return [
+            {"role": msg.role, "content": msg.content}
+            for msg in self.messages
+        ]
+    
+    def clear(self):
         """Clear all messages."""
-        self.messages = []
-        
-    def __len__(self) -> int:
-        return len(self.messages)
+        self.messages.clear()
+        self._token_count = 0
+    
+    def get_token_count(self) -> int:
+        """Get current token count."""
+        return self._token_count
+    
+    def get_last_n(self, n: int) -> List[Message]:
+        """Get last N messages."""
+        return list(self.messages)[-n:]
 
 
 @dataclass
+class Document:
+    """A document for long-term memory."""
+    id: str
+    content: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    embedding: Optional[List[float]] = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
 class LongTermMemory:
     """
-    Persistent long-term memory with vector storage capability.
+    Long-term memory with vector search capabilities.
     
     Features:
-    - Key-value storage
-    - Expiration support
-    - Metadata tagging
-    """
-    storage: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    - Document storage with metadata
+    - Similarity search (when embeddings provided)
+    - Persistence ready (can be backed by Pinecone, etc.)
     
-    def set(
-        self,
-        key: str,
-        value: Any,
-        ttl: Optional[int] = None,
-        tags: Optional[List[str]] = None
-    ) -> None:
-        """Store a value with optional TTL and tags."""
-        self.storage[key] = {
-            "value": value,
-            "created_at": time.time(),
-            "expires_at": time.time() + ttl if ttl else None,
-            "tags": tags or []
-        }
-        
-    def get(self, key: str) -> Optional[Any]:
-        """Retrieve a value by key."""
-        if key not in self.storage:
-            return None
-            
-        entry = self.storage[key]
-        
-        # Check expiration
-        if entry.get("expires_at") and time.time() > entry["expires_at"]:
-            del self.storage[key]
-            return None
-            
-        return entry["value"]
-        
-    def delete(self, key: str) -> bool:
-        """Delete a key."""
-        if key in self.storage:
-            del self.storage[key]
-            return True
-        return False
-        
-    def search_by_tag(self, tag: str) -> Dict[str, Any]:
-        """Search entries by tag."""
-        return {
-            k: v["value"]
-            for k, v in self.storage.items()
-            if tag in v.get("tags", [])
-        }
-        
-    def cleanup_expired(self) -> int:
-        """Remove expired entries. Returns count removed."""
-        now = time.time()
-        expired = [
-            k for k, v in self.storage.items()
-            if v.get("expires_at") and now > v["expires_at"]
-        ]
-        
-        for key in expired:
-            del self.storage[key]
-            
-        return len(expired)
-
-
-class VectorStore:
-    """
-    Simple in-memory vector store for embeddings.
-    
-    For production, use Pinecone, Weaviate, or similar.
+    In production, this integrates with vector databases like:
+    - Pinecone
+    - Weaviate
+    - Qdrant
+    - pgvector
     """
     
     def __init__(self):
-        self.vectors: Dict[str, List[float]] = {}
-        self.metadata: Dict[str, Dict[str, Any]] = {}
+        self.documents: Dict[str, Document] = {}
+        self.index: Dict[str, Document] = {}  # Could be replaced with vector index
+    
+    def store(self, doc_id: str, content: str, 
+              metadata: Optional[Dict[str, Any]] = None,
+              embedding: Optional[List[float]] = None) -> Document:
+        """Store a document in long-term memory."""
+        doc = Document(
+            id=doc_id,
+            content=content,
+            metadata=metadata or {},
+            embedding=embedding
+        )
+        self.documents[doc_id] = doc
         
-    def add_vector(
-        self,
-        id: str,
-        vector: List[float],
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Add a vector with metadata."""
-        self.vectors[id] = vector
-        self.metadata[id] = metadata or {}
+        # Add to search index
+        self.index[doc_id] = doc
         
-    def similarity_search(
-        self,
-        query_vector: List[float],
-        top_k: int = 5
-    ) -> List[tuple]:
-        """Find most similar vectors (cosine similarity)."""
-        if not self.vectors:
-            return []
-            
-        def cosine_similarity(v1: List[float], v2: List[float]) -> float:
-            dot = sum(a * b for a, b in zip(v1, v2))
-            norm1 = sum(a * a for a in v1) ** 0.5
-            norm2 = sum(b * b for b in v2) ** 0.5
-            return dot / (norm1 * norm2) if norm1 and norm2 else 0.0
-            
-        scores = [
-            (id, cosine_similarity(query_vector, vec))
-            for id, vec in self.vectors.items()
-        ]
-        
-        scores.sort(key=lambda x: x[1], reverse=True)
-        
-        return [
-            (id, score, self.metadata.get(id, {}))
-            for id, score in scores[:top_k]
-        ]
-        
-    def delete(self, id: str) -> bool:
-        """Delete a vector by ID."""
-        if id in self.vectors:
-            del self.vectors[id]
-            del self.metadata[id]
+        return doc
+    
+    def get(self, doc_id: str) -> Optional[Document]:
+        """Retrieve a document by ID."""
+        return self.documents.get(doc_id)
+    
+    def delete(self, doc_id: str) -> bool:
+        """Delete a document."""
+        if doc_id in self.documents:
+            del self.documents[doc_id]
+            if doc_id in self.index:
+                del self.index[doc_id]
             return True
         return False
+    
+    def search(self, query: str, limit: int = 5,
+               filter_metadata: Optional[Dict[str, Any]] = None) -> List[Document]:
+        """
+        Search for relevant documents.
+        
+        In production with embeddings:
+        - Compute query embedding
+        - Find nearest neighbors in vector index
+        - Apply metadata filters
+        - Return top K results
+        
+        This is a simplified keyword-based search for demonstration.
+        """
+        # Simple keyword matching (replace with vector search in production)
+        query_words = set(query.lower().split())
+        
+        scored_docs = []
+        for doc in self.documents.values():
+            # Apply metadata filter if specified
+            if filter_metadata:
+                match = all(
+                    doc.metadata.get(k) == v 
+                    for k, v in filter_metadata.items()
+                )
+                if not match:
+                    continue
+            
+            # Score by keyword overlap
+            doc_words = set(doc.content.lower().split())
+            overlap = len(query_words & doc_words)
+            
+            if overlap > 0:
+                scored_docs.append((overlap, doc))
+        
+        # Sort by score and return top results
+        scored_docs.sort(key=lambda x: -x[0])
+        return [doc for _, doc in scored_docs[:limit]]
+    
+    def clear(self):
+        """Clear all documents."""
+        self.documents.clear()
+        self.index.clear()
