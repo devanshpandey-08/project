@@ -1,11 +1,11 @@
-"""Tools module exports."""
-from .tool import Tool, Action, ToolParameter, ToolConfig, ToolError, tool
+"""Tools package."""
+
+from flomind.tools.tool import Tool, ToolParameter, ToolResult, tool, ToolRegistry
 
 __all__ = [
-    'Tool',
-    'Action',
-    'ToolParameter',
-    'ToolConfig',
-    'ToolError',
-    'tool',
+    "Tool",
+    "ToolParameter",
+    "ToolResult",
+    "tool",
+    "ToolRegistry",
 ]

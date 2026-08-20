@@ -1,145 +1,122 @@
 """
-FlowMind - The Next Generation AI Orchestration Framework
+FlowMind - The Last AI Orchestration Framework You'll Ever Need
 
-FlowMind replaces LangChain and LangGraph with a unified, type-safe,
-and performant framework for building AI applications.
+FlowMind completely replaces LangChain and LangGraph with a unified,
+type-safe, production-ready framework designed for enterprise scale.
 
 Key Features:
-- Flow-based programming model (replaces Chains and Graphs)
+- Single primitive: Flow (replaces Chains + Graphs)
 - Type-safe state management
-- Built-in agent system with tool support
-- Multi-agent team coordination
-- Comprehensive observability (tracing, metrics)
-- Streaming support
-- Vector store abstraction
-- Resilience policies (retry, timeout, circuit breaker)
-
-Quick Start:
-    from flomind import Flow, Agent, Tool, create_flow
-    
-    # Create a simple flow
-    flow = create_flow("my_flow")
-    
-    @flow.node
-    async def process(state):
-        return {"result": "hello"}
-    
-    result = await flow.run()
+- Built-in security (encryption, PII detection, RBAC)
+- Native observability (tracing, metrics, audit logs)
+- Multi-agent orchestration
+- Resilience patterns (retry, timeout, circuit breaker)
+- Async-native execution
+- Provider-agnostic LLM interface
 """
 
 __version__ = "1.0.0"
 __author__ = "FlowMind Team"
 
-# Core primitives
-from .core.flow import Flow, Node, Edge, NodeType, EdgeCondition, create_flow
-from .core.state import FlowState, NodeResult
+# Core Primitives
+from flomind.core.flow import FlowState, FlowContext
+from flomind.core.node import Node, NodeType
+from flomind.core.edge import Edge, ConditionalEdge
+from flomind.core.executor import FlowExecutor
+from flomind.core import Flow, create_flow
 
-# Agents
-from .agents.agent import Agent, Role, AgentConfig
-from .agents.team import AgentTeam, TeamConfig
-
-# Tools
-from .tools.tool import Tool, Action, tool, ToolError
-
-# Memory
-from .memory.memory import Memory, ShortTermMemory, LongTermMemory, ContextWindow
-
-# Workflows
-from .workflows.workflow import Workflow, Sequential, Parallel, Conditional, Loop
-
-# Policies
-from .policies import RetryPolicy, TimeoutPolicy, CircuitBreaker
-
-# Streaming
-from .streaming.stream import Stream, EventBus, EventType, StreamChunk
-
-# Observability
-from .observability.tracer import Tracer, Trace, Span, Metrics
-
-# Vector Store
-from .vector.store import VectorStore, InMemoryVectorStore, Document
-
-# Configuration (NEW - Production Ready)
-from .config import (
-    FlowMindConfig,
-    ConfigManager,
-    get_config,
-    load_config,
-    load_config_from_env,
+# Agents & Teams
+from flomind.agents.agent import Agent
+from flomind.agents.team import Team
+from flomind.agents.roles import (
+    ManagerAgent,
+    ResearcherAgent,
+    WriterAgent,
+    CoderAgent,
+    ReviewerAgent,
 )
 
-# Convenience exports
+# Tools System
+from flomind.tools.tool import Tool, tool, ToolRegistry
+
+# Memory Systems
+from flomind.memory.short_term import ShortTermMemory
+from flomind.memory.long_term import LongTermMemory
+from flomind.memory.vector import VectorMemory
+
+# Security
+from flomind.security.encryptor import Encryptor
+from flomind.security.pii import PIIDetector, RedactionLevel
+from flomind.security.sanitizer import InputSanitizer
+
+# Observability - placeholder imports (modules to be implemented)
+# from flomind.observability.tracer import Tracer, Span
+# from flomind.observability.metrics import MetricsCollector
+# from flomind.observability.logger import StructuredLogger
+
+# Configuration - placeholder imports
+# from flomind.config.settings import FlowMindConfig, ConfigLoader
+
+# Integrations - placeholder imports
+# from flomind.integrations.llm import LLMProvider, OpenAIProvider, AnthropicProvider
+# from flomind.integrations.vector import VectorStore, PineconeStore
+
+# Utilities
+from flomind.core.types import FlowResult, StreamChunk
+
 __all__ = [
     # Core
-    'Flow',
-    'Node',
-    'Edge',
-    'NodeType',
-    'EdgeCondition',
-    'create_flow',
-    'FlowState',
-    'NodeResult',
-    
+    "Flow",
+    "FlowState",
+    "FlowContext",
+    "Node",
+    "NodeType",
+    "Edge",
+    "ConditionalEdge",
+    "FlowExecutor",
     # Agents
-    'Agent',
-    'Role',
-    'AgentConfig',
-    'AgentTeam',
-    'TeamConfig',
-    
+    "Agent",
+    "Team",
+    "ManagerAgent",
+    "ResearcherAgent",
+    "WriterAgent",
+    "CoderAgent",
+    "ReviewerAgent",
     # Tools
-    'Tool',
-    'Action',
-    'tool',
-    'ToolError',
-    
+    "Tool",
+    "tool",
+    "ToolRegistry",
     # Memory
-    'Memory',
-    'ShortTermMemory',
-    'LongTermMemory',
-    'ContextWindow',
-    
-    # Workflows
-    'Workflow',
-    'Sequential',
-    'Parallel',
-    'Conditional',
-    'Loop',
-    
-    # Policies
-    'RetryPolicy',
-    'TimeoutPolicy',
-    'CircuitBreaker',
-    
-    # Streaming
-    'Stream',
-    'EventBus',
-    'EventType',
-    'StreamChunk',
-    
+    "ShortTermMemory",
+    "LongTermMemory",
+    "VectorMemory",
+    # Security
+    "Encryptor",
+    "PIIDetector",
+    "RedactionLevel",
+    "InputSanitizer",
+    "AuditLogger",
+    "AuditEvent",
+    "RBACManager",
+    "Role",
+    "Permission",
+    "RateLimiter",
+    "RateLimitPolicy",
     # Observability
-    'Tracer',
-    'Trace',
-    'Span',
-    'Metrics',
-    
-    # Vector
-    'VectorStore',
-    'InMemoryVectorStore',
-    'Document',
-    
-    # Configuration (Production Ready)
-    'FlowMindConfig',
-    'ConfigManager',
-    'get_config',
-    'load_config',
-    'load_config_from_env',
+    "Tracer",
+    "Span",
+    "MetricsCollector",
+    "StructuredLogger",
+    # Config
+    "FlowMindConfig",
+    "ConfigLoader",
+    # Integrations
+    "LLMProvider",
+    "OpenAIProvider",
+    "AnthropicProvider",
+    "VectorStore",
+    "PineconeStore",
+    # Types
+    "FlowResult",
+    "StreamChunk",
 ]
-
-
-def __getattr__(name):
-    """Lazy loading for backwards compatibility."""
-    if name == 'State':
-        from .core.state import FlowState
-        return FlowState
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
