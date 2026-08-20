@@ -1,119 +1,171 @@
-"""Short-term memory for conversation history."""
+"""Memory systems for FlowMind."""
 
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
 from collections import deque
 import time
 
 
 @dataclass
-class Message:
-    """A single message in conversation history."""
-    role: str  # "user", "assistant", "system", "tool"
-    content: str
-    timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "role": self.role,
-            "content": self.content,
-            **self.metadata,
-        }
-
-
 class ShortTermMemory:
     """
-    Sliding window memory for conversation history.
+    Sliding window short-term memory for agents.
     
     Features:
-    - Configurable max messages
-    - Automatic eviction of old messages
-    - Message types: user, assistant, system, tool
-    - Token estimation
+    - Configurable window size
+    - Automatic eviction
+    - Context preservation
+    """
+    max_messages: int = 10
+    messages: List[Dict[str, Any]] = field(default_factory=list)
     
-    Usage:
-        memory = ShortTermMemory(max_messages=20)
-        memory.add_user_message("Hello!")
-        memory.add_assistant_message("Hi there!")
-        messages = memory.get_messages()
+    def add(self, role: str, content: str, **metadata) -> None:
+        """Add a message to memory."""
+        self.messages.append({
+            "role": role,
+            "content": content,
+            "timestamp": time.time(),
+            **metadata
+        })
+        
+        # Evict old messages
+        while len(self.messages) > self.max_messages:
+            self.messages.pop(0)
+            
+    def get_context(self) -> List[Dict[str, Any]]:
+        """Get full context for LLM."""
+        return self.messages.copy()
+        
+    def clear(self) -> None:
+        """Clear all messages."""
+        self.messages = []
+        
+    def __len__(self) -> int:
+        return len(self.messages)
+
+
+@dataclass
+class LongTermMemory:
+    """
+    Persistent long-term memory with vector storage capability.
+    
+    Features:
+    - Key-value storage
+    - Expiration support
+    - Metadata tagging
+    """
+    storage: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    
+    def set(
+        self,
+        key: str,
+        value: Any,
+        ttl: Optional[int] = None,
+        tags: Optional[List[str]] = None
+    ) -> None:
+        """Store a value with optional TTL and tags."""
+        self.storage[key] = {
+            "value": value,
+            "created_at": time.time(),
+            "expires_at": time.time() + ttl if ttl else None,
+            "tags": tags or []
+        }
+        
+    def get(self, key: str) -> Optional[Any]:
+        """Retrieve a value by key."""
+        if key not in self.storage:
+            return None
+            
+        entry = self.storage[key]
+        
+        # Check expiration
+        if entry.get("expires_at") and time.time() > entry["expires_at"]:
+            del self.storage[key]
+            return None
+            
+        return entry["value"]
+        
+    def delete(self, key: str) -> bool:
+        """Delete a key."""
+        if key in self.storage:
+            del self.storage[key]
+            return True
+        return False
+        
+    def search_by_tag(self, tag: str) -> Dict[str, Any]:
+        """Search entries by tag."""
+        return {
+            k: v["value"]
+            for k, v in self.storage.items()
+            if tag in v.get("tags", [])
+        }
+        
+    def cleanup_expired(self) -> int:
+        """Remove expired entries. Returns count removed."""
+        now = time.time()
+        expired = [
+            k for k, v in self.storage.items()
+            if v.get("expires_at") and now > v["expires_at"]
+        ]
+        
+        for key in expired:
+            del self.storage[key]
+            
+        return len(expired)
+
+
+class VectorStore:
+    """
+    Simple in-memory vector store for embeddings.
+    
+    For production, use Pinecone, Weaviate, or similar.
     """
     
-    def __init__(self, max_messages: int = 20, estimate_tokens: bool = True):
-        self.max_messages = max_messages
-        self.estimate_tokens = estimate_tokens
-        self._messages: deque[Message] = deque(maxlen=max_messages)
-        self._system_prompt: Optional[str] = None
-    
-    def set_system_prompt(self, prompt: str) -> "ShortTermMemory":
-        """Set the system prompt (always included first)."""
-        self._system_prompt = prompt
-        return self
-    
-    def add_message(self, role: str, content: str, **metadata) -> "ShortTermMemory":
-        """Add a message to memory."""
-        msg = Message(role=role, content=content, metadata=metadata)
-        self._messages.append(msg)
-        return self
-    
-    def add_user_message(self, content: str, **metadata) -> "ShortTermMemory":
-        """Add a user message."""
-        return self.add_message("user", content, **metadata)
-    
-    def add_assistant_message(self, content: str, **metadata) -> "ShortTermMemory":
-        """Add an assistant message."""
-        return self.add_message("assistant", content, **metadata)
-    
-    def add_tool_result(self, tool_name: str, result: Any) -> "ShortTermMemory":
-        """Add a tool execution result."""
-        content = str(result) if not isinstance(result, str) else result
-        return self.add_message("tool", content, tool_name=tool_name)
-    
-    def get_messages(self, include_system: bool = True) -> List[Dict[str, Any]]:
-        """Get all messages as a list of dicts."""
-        messages = []
+    def __init__(self):
+        self.vectors: Dict[str, List[float]] = {}
+        self.metadata: Dict[str, Dict[str, Any]] = {}
         
-        # Add system prompt first
-        if include_system and self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
+    def add_vector(
+        self,
+        id: str,
+        vector: List[float],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Add a vector with metadata."""
+        self.vectors[id] = vector
+        self.metadata[id] = metadata or {}
         
-        # Add conversation messages
-        messages.extend([msg.to_dict() for msg in self._messages])
+    def similarity_search(
+        self,
+        query_vector: List[float],
+        top_k: int = 5
+    ) -> List[tuple]:
+        """Find most similar vectors (cosine similarity)."""
+        if not self.vectors:
+            return []
+            
+        def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+            dot = sum(a * b for a, b in zip(v1, v2))
+            norm1 = sum(a * a for a in v1) ** 0.5
+            norm2 = sum(b * b for b in v2) ** 0.5
+            return dot / (norm1 * norm2) if norm1 and norm2 else 0.0
+            
+        scores = [
+            (id, cosine_similarity(query_vector, vec))
+            for id, vec in self.vectors.items()
+        ]
         
-        return messages
-    
-    def get_last_message(self, role: Optional[str] = None) -> Optional[Message]:
-        """Get the last message, optionally filtered by role."""
-        if role is None:
-            return self._messages[-1] if self._messages else None
+        scores.sort(key=lambda x: x[1], reverse=True)
         
-        for msg in reversed(self._messages):
-            if msg.role == role:
-                return msg
-        return None
-    
-    def clear(self) -> "ShortTermMemory":
-        """Clear all messages (except system prompt)."""
-        self._messages.clear()
-        return self
-    
-    def pop(self, count: int = 1) -> List[Message]:
-        """Remove and return the oldest messages."""
-        popped = []
-        for _ in range(min(count, len(self._messages))):
-            popped.append(self._messages.popleft())
-        return popped
-    
-    def estimate_tokens(self) -> int:
-        """Estimate total tokens in memory (rough approximation)."""
-        total_chars = sum(len(msg.content) for msg in self._messages)
-        if self._system_prompt:
-            total_chars += len(self._system_prompt)
-        # Rough estimate: 1 token ≈ 4 characters
-        return total_chars // 4
-    
-    def __len__(self) -> int:
-        return len(self._messages)
-    
-    def __repr__(self) -> str:
-        return f"ShortTermMemory(messages={len(self._messages)}, max={self.max_messages})"
+        return [
+            (id, score, self.metadata.get(id, {}))
+            for id, score in scores[:top_k]
+        ]
+        
+    def delete(self, id: str) -> bool:
+        """Delete a vector by ID."""
+        if id in self.vectors:
+            del self.vectors[id]
+            del self.metadata[id]
+            return True
+        return False

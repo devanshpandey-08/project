@@ -1,253 +1,206 @@
-"""Team orchestration for multi-agent collaboration."""
+"""Multi-Agent Team orchestration."""
 
-import asyncio
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Literal
 from enum import Enum
+import asyncio
 
-from flomind.agents.agent import Agent, AgentConfig
-from flomind.core.flow import FlowState, FlowContext
-from flomind.core.node import Node
+from flomind.agents.agent import Agent
 
 
-class TeamMode(Enum):
-    """Mode of team collaboration."""
+class TeamStrategy(Enum):
+    """Strategies for team execution."""
     SEQUENTIAL = "sequential"  # Agents work one after another
     PARALLEL = "parallel"  # Agents work simultaneously
     HIERARCHICAL = "hierarchical"  # Manager delegates to workers
-    CONSENSUS = "consensus"  # All agents must agree
+    DEBATE = "debate"  # Agents debate and reach consensus
 
 
 @dataclass
 class TeamConfig:
     """Configuration for a team."""
     name: str
-    mode: TeamMode = TeamMode.SEQUENTIAL
-    verbose: bool = True
-    max_rounds: int = 5
-
+    strategy: TeamStrategy = TeamStrategy.SEQUENTIAL
+    agents: List[Agent] = field(default_factory=list)
+    max_rounds: int = 3
+    
 
 class Team:
     """
-    Multi-agent team for collaborative task completion.
+    Multi-Agent Team for complex task orchestration.
     
-    Teams enable multiple agents to work together using different
-    collaboration patterns:
-    
-    - Sequential: Each agent builds on previous work
-    - Parallel: Agents work independently, results combined
-    - Hierarchical: Manager delegates to specialized workers
-    - Consensus: All agents discuss and reach agreement
-    
-    Usage:
-        team = Team("ResearchTeam")
-            .add_agent(researcher)
-            .add_agent(writer)
-            .add_agent(reviewer)
-        
-        result = await team.run("Write a report on AI trends")
+    Features:
+    - Multiple execution strategies
+    - Agent coordination
+    - Result aggregation
+    - Conflict resolution
     """
     
     def __init__(
         self,
         name: str,
-        manager: Optional[Agent] = None,
-        config: Optional[TeamConfig] = None,
+        strategy: str = "sequential",
+        agents: Optional[List[Agent]] = None,
+        **kwargs
     ):
         self.name = name
-        self.manager = manager
-        self.agents: List[Agent] = []
-        self.config = config or TeamConfig(name=name)
-        self._agent_registry: Dict[str, Agent] = {}
-    
-    def add_agent(self, agent: Agent) -> "Team":
+        self.strategy = TeamStrategy(strategy.lower())
+        self.agents = agents or []
+        self.max_rounds = kwargs.get("max_rounds", 3)
+        self._results: List[Dict[str, Any]] = []
+        
+    def add_agent(self, agent: Agent) -> 'Team':
         """Add an agent to the team."""
         self.agents.append(agent)
-        self._agent_registry[agent.name] = agent
         return self
-    
-    def remove_agent(self, agent_name: str) -> "Team":
+        
+    def remove_agent(self, agent_name: str) -> bool:
         """Remove an agent from the team."""
-        if agent_name in self._agent_registry:
-            del self._agent_registry[agent_name]
-            self.agents = [a for a in self.agents if a.name != agent_name]
-        return self
-    
+        for i, agent in enumerate(self.agents):
+            if agent.name == agent_name:
+                self.agents.pop(i)
+                return True
+        return False
+        
     async def _run_sequential(
         self,
         task: str,
-        context: Optional[FlowContext] = None,
-    ) -> Any:
-        """Run agents sequentially, each building on previous work."""
-        current_result = task
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Run agents sequentially, passing results between them."""
+        current_task = task
+        results = []
         
         for agent in self.agents:
-            if context and context.is_cancelled():
-                break
+            result = await agent.run(current_task, context)
+            results.append({
+                "agent": agent.name,
+                "result": result
+            })
             
-            # Pass previous result as context
-            agent_task = f"{current_result}\n\nYour contribution:"
-            current_result = await agent.run(agent_task, context)
+            if result.get("answer"):
+                current_task = f"Previous result: {result['answer']}. Continue: {task}"
+                
+        # Aggregate results
+        final_answer = results[-1]["result"].get("answer", "") if results else ""
         
-        return current_result
-    
+        return {
+            "success": all(r["result"].get("success", False) for r in results),
+            "answer": final_answer,
+            "agent_results": results,
+            "strategy": "sequential"
+        }
+        
     async def _run_parallel(
         self,
         task: str,
-        context: Optional[FlowContext] = None,
-    ) -> Any:
-        """Run all agents in parallel and combine results."""
-        async def run_agent(agent: Agent) -> tuple:
-            result = await agent.run(task, context)
-            return (agent.name, result)
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Run all agents in parallel."""
+        tasks = [agent.run(task, context) for agent in self.agents]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        tasks = [run_agent(agent) for agent in self.agents]
-        results = await asyncio.gather(*tasks)
+        agent_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                agent_results.append({
+                    "agent": self.agents[i].name,
+                    "error": str(result)
+                })
+            else:
+                agent_results.append({
+                    "agent": self.agents[i].name,
+                    "result": result
+                })
+                
+        # Simple aggregation: take first successful answer
+        final_answer = ""
+        for ar in agent_results:
+            if "result" in ar and ar["result"].get("answer"):
+                final_answer = ar["result"]["answer"]
+                break
+                
+        return {
+            "success": True,
+            "answer": final_answer,
+            "agent_results": agent_results,
+            "strategy": "parallel"
+        }
         
-        # Combine results
-        combined = "\n\n".join([f"### {name}\n{result}" for name, result in results])
-        return combined
-    
     async def _run_hierarchical(
         self,
         task: str,
-        context: Optional[FlowContext] = None,
-    ) -> Any:
-        """Manager delegates tasks to worker agents."""
-        if not self.manager:
-            # Use first agent as de facto manager
-            return await self._run_sequential(task, context)
-        
-        # Manager plans and delegates
-        plan = await self.manager.run(f"Plan how to accomplish: {task}", context)
-        
-        # Execute plan with workers
-        results = []
-        for agent in self.agents:
-            if context and context.is_cancelled():
-                break
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Run with manager delegating to workers."""
+        if not self.agents:
+            return {"success": False, "answer": "No agents in team"}
             
-            agent_task = f"Based on this plan: {plan}\n\nYour specific task:"
-            result = await agent.run(agent_task, context)
-            results.append((agent.name, result))
+        # First agent is manager
+        manager = self.agents[0]
+        workers = self.agents[1:] if len(self.agents) > 1 else []
         
-        # Manager synthesizes final result
-        synthesis_input = "\n\n".join([f"### {name}\n{result}" for name, result in results])
-        final = await self.manager.run(
-            f"Synthesize these results into a coherent output:\n{synthesis_input}",
+        # Manager analyzes task
+        manager_result = await manager.run(
+            f"As manager, analyze and delegate: {task}",
             context
         )
         
-        return final
-    
-    async def _run_consensus(
-        self,
-        task: str,
-        context: Optional[FlowContext] = None,
-    ) -> Any:
-        """All agents discuss and reach consensus."""
-        if not self.agents:
-            return ""
-        
-        # Round 1: Each agent provides initial thoughts
-        initial_thoughts = []
-        for agent in self.agents:
-            thought = await agent.run(f"Initial thoughts on: {task}", context)
-            initial_thoughts.append(f"{agent.name}: {thought}")
-        
-        discussion = "\n\n".join(initial_thoughts)
-        
-        # Round 2+: Agents refine based on others' input
-        for round_num in range(1, self.config.max_rounds):
-            refined = []
-            for agent in self.agents:
-                if context and context.is_cancelled():
-                    break
-                
-                prompt = f"""Previous discussion:
-{discussion}
-
-Refine your position considering others' viewpoints:"""
-                refined_thought = await agent.run(prompt, context)
-                refined.append(f"{agent.name} (round {round_num}): {refined_thought}")
+        if not workers:
+            return {
+                "success": manager_result.get("success", False),
+                "answer": manager_result.get("answer", ""),
+                "agent_results": [{"agent": manager.name, "result": manager_result}],
+                "strategy": "hierarchical"
+            }
             
-            discussion = "\n\n".join(refined)
+        # Delegate to workers
+        worker_tasks = []
+        for worker in workers:
+            worker_task = f"As {worker.role}, help with: {task}"
+            worker_tasks.append(worker.run(worker_task, context))
+            
+        worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
         
-        return f"Final consensus after {self.config.max_rounds} rounds:\n{discussion}"
-    
+        # Manager synthesizes
+        synthesis_task = f"Synthesize these results: {[r for r in worker_results]}"
+        final_result = await manager.run(synthesis_task, context)
+        
+        return {
+            "success": final_result.get("success", False),
+            "answer": final_result.get("answer", ""),
+            "manager_result": manager_result,
+            "worker_results": list(worker_results),
+            "strategy": "hierarchical"
+        }
+        
     async def run(
         self,
         task: str,
-        context: Optional[FlowContext] = None,
-    ) -> Any:
-        """
-        Run the team on a task.
-        
-        Args:
-            task: The task to accomplish
-            context: Optional flow context
-        
-        Returns:
-            Combined result from all agents
-        """
-        if self.config.mode == TeamMode.SEQUENTIAL:
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Run the team on a task using configured strategy."""
+        if self.strategy == TeamStrategy.SEQUENTIAL:
             return await self._run_sequential(task, context)
-        elif self.config.mode == TeamMode.PARALLEL:
+        elif self.strategy == TeamStrategy.PARALLEL:
             return await self._run_parallel(task, context)
-        elif self.config.mode == TeamMode.HIERARCHICAL:
+        elif self.strategy == TeamStrategy.HIERARCHICAL:
             return await self._run_hierarchical(task, context)
-        elif self.config.mode == TeamMode.CONSENSUS:
-            return await self._run_consensus(task, context)
         else:
+            # Default to sequential for unknown strategies
             return await self._run_sequential(task, context)
-    
-    def run_sync(self, task: str, context: Optional[FlowContext] = None) -> Any:
-        """Run the team synchronously."""
+            
+    def run_sync(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Run team synchronously."""
         return asyncio.run(self.run(task, context))
-    
-    def to_node(self) -> Node:
-        """Convert team to a Flow node."""
-        async def team_action(ctx: FlowContext) -> Any:
-            task = ctx.state.get("task", ctx.state.get("input", ""))
-            return await self.run(task, ctx)
         
-        return Node(
-            id=f"team_{self.name.lower().replace(' ', '_')}",
-            action=team_action,
-            name=self.name,
-            description=f"Team ({self.config.mode.value}): {len(self.agents)} agents",
-        )
-    
-    def __repr__(self) -> str:
-        return f"Team(name={self.name}, mode={self.config.mode.value}, agents={len(self.agents)})"
-
-
-# Convenience classes for common team patterns
-class SequentialTeam(Team):
-    """Team where agents work sequentially, each building on previous work."""
-    def __init__(self, name: str, agents: List[Agent] = None, **kwargs):
-        config = TeamConfig(name=name, mode=TeamMode.SEQUENTIAL, **kwargs)
-        super().__init__(name=name, config=config)
-        if agents:
-            for agent in agents:
-                self.add_agent(agent)
-
-
-class ParallelTeam(Team):
-    """Team where agents work simultaneously and results are combined."""
-    def __init__(self, name: str, agents: List[Agent] = None, **kwargs):
-        config = TeamConfig(name=name, mode=TeamMode.PARALLEL, **kwargs)
-        super().__init__(name=name, config=config)
-        if agents:
-            for agent in agents:
-                self.add_agent(agent)
-
-
-class HierarchicalTeam(Team):
-    """Team with a manager delegating to worker agents."""
-    def __init__(self, name: str, agents: List[Agent] = None, manager: Agent = None, **kwargs):
-        config = TeamConfig(name=name, mode=TeamMode.HIERARCHICAL, **kwargs)
-        super().__init__(name=name, manager=manager, config=config)
-        if agents:
-            for agent in agents:
-                self.add_agent(agent)
+    def get_agents_info(self) -> List[Dict[str, Any]]:
+        """Get information about all agents."""
+        return [
+            {"name": a.name, "role": a.role, "tools_count": len(a.tools)}
+            for a in self.agents
+        ]

@@ -1,351 +1,142 @@
-"""Flow executor with resilience patterns and async execution."""
+"""Flow Executor with resilience patterns."""
 
+from typing import Any, Dict, Optional, Callable
 import asyncio
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, AsyncIterator
+from dataclasses import dataclass
+from datetime import datetime
 
-from flomind.core.flow import FlowState, FlowContext
-from flomind.core.node import Node, NodeResult, NodeType
-from flomind.core.edge import Edge, ConditionalEdge
-from flomind.core.types import (
-    FlowResult, 
-    FlowStatus, 
-    FlowMetadata,
-    RetryConfig, 
-    TimeoutConfig,
-    CircuitBreakerConfig,
-    StreamChunk,
-)
+
+@dataclass
+class RetryPolicy:
+    """Retry policy configuration."""
+    max_retries: int = 3
+    delay: float = 1.0
+    backoff_multiplier: float = 2.0
+    max_delay: float = 60.0
+    retry_on: tuple = (Exception,)
+    
+    def get_delay(self, attempt: int) -> float:
+        """Calculate delay for given attempt."""
+        delay = self.delay * (self.backoff_multiplier ** attempt)
+        return min(delay, self.max_delay)
+
+
+@dataclass
+class TimeoutPolicy:
+    """Timeout policy configuration."""
+    timeout: float = 30.0
+    raise_on_timeout: bool = True
 
 
 @dataclass
 class CircuitBreaker:
     """Circuit breaker for fault tolerance."""
-    config: CircuitBreakerConfig
-    failures: int = 0
-    last_failure_time: float = 0
-    state: str = "closed"  # closed, open, half-open
-    success_count: int = 0
+    failure_threshold: int = 5
+    recovery_timeout: float = 60.0
+    half_open_requests: int = 1
     
-    def can_execute(self) -> bool:
-        if self.state == "closed":
-            return True
-        elif self.state == "open":
-            if (time.time() - self.last_failure_time) * 1000 >= self.config.recovery_timeout_ms:
-                self.state = "half-open"
-                self.success_count = 0
-                return True
-            return False
-        else:  # half-open
-            return True
-    
-    def record_success(self) -> None:
-        if self.state == "half-open":
-            self.success_count += 1
-            if self.success_count >= self.config.half_open_requests:
-                self.state = "closed"
-                self.failures = 0
-        else:
-            self.failures = max(0, self.failures - 1)
-    
-    def record_failure(self) -> None:
+    def __post_init__(self):
+        self.failures = 0
+        self.last_failure_time: Optional[float] = None
+        self.state = "closed"  # closed, open, half-open
+        
+    def record_success(self):
+        """Record successful execution."""
+        self.failures = 0
+        self.state = "closed"
+        
+    def record_failure(self):
+        """Record failed execution."""
         self.failures += 1
         self.last_failure_time = time.time()
-        if self.failures >= self.config.failure_threshold:
+        if self.failures >= self.failure_threshold:
             self.state = "open"
+            
+    def can_execute(self) -> bool:
+        """Check if execution is allowed."""
+        if self.state == "closed":
+            return True
+        if self.state == "open":
+            if self.last_failure_time and \
+               time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "half-open"
+                return True
+            return False
+        # half-open
+        return True
 
 
 class FlowExecutor:
-    """
-    Executes FlowMind flows with full resilience support.
-    
-    Features:
-    - Async execution
-    - Retry with exponential backoff
-    - Timeout handling
-    - Circuit breaker pattern
-    - Parallel node execution
-    - Streaming support
-    - Cancellation
-    """
+    """Executes flows with resilience patterns."""
     
     def __init__(
         self,
-        retry_config: Optional[RetryConfig] = None,
-        timeout_config: Optional[TimeoutConfig] = None,
-        circuit_breaker_config: Optional[CircuitBreakerConfig] = None,
+        retry_policy: Optional[RetryPolicy] = None,
+        timeout_policy: Optional[TimeoutPolicy] = None,
+        circuit_breaker: Optional[CircuitBreaker] = None
     ):
-        self.default_retry = retry_config or RetryConfig()
-        self.default_timeout = timeout_config or TimeoutConfig()
-        self.circuit_breaker_config = circuit_breaker_config or CircuitBreakerConfig()
-        self._circuit_breakers: Dict[str, CircuitBreaker] = {}
-    
-    def _get_circuit_breaker(self, node_id: str) -> CircuitBreaker:
-        if node_id not in self._circuit_breakers:
-            self._circuit_breakers[node_id] = CircuitBreaker(self.circuit_breaker_config)
-        return self._circuit_breakers[node_id]
-    
-    async def execute_with_retry(
-        self,
-        node: Node,
-        context: FlowContext,
-    ) -> NodeResult:
-        """Execute a node with retry logic."""
-        retry_config = node.retry_config or self.default_retry
-        last_error = None
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.timeout_policy = timeout_policy or TimeoutPolicy()
+        self.circuit_breaker = circuit_breaker or CircuitBreaker()
         
-        for attempt in range(retry_config.max_retries + 1):
-            context.attempt = attempt
+    async def execute_with_resilience(
+        self,
+        func: Callable,
+        *args,
+        **kwargs
+    ) -> Any:
+        """Execute function with retry, timeout, and circuit breaker."""
+        # Check circuit breaker
+        if not self.circuit_breaker.can_execute():
+            raise Exception("Circuit breaker is open")
             
-            # Check circuit breaker
-            cb = self._get_circuit_breaker(node.id)
-            if not cb.can_execute():
-                return NodeResult(
-                    success=False,
-                    error=f"Circuit breaker open for node {node.id}",
-                    metadata={"circuit_breaker": True}
-                )
-            
+        last_error = None
+        attempt = 0
+        
+        while attempt <= self.retry_policy.max_retries:
             try:
-                result = await node.execute(context)
-                
-                if result.success:
-                    cb.record_success()
-                    return result
+                # Execute with timeout
+                if asyncio.iscoroutinefunction(func):
+                    result = await asyncio.wait_for(
+                        func(*args, **kwargs),
+                        timeout=self.timeout_policy.timeout
+                    )
                 else:
-                    last_error = result.error
+                    result = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None, func, *args, **kwargs
+                        ),
+                        timeout=self.timeout_policy.timeout
+                    )
+                    
+                self.circuit_breaker.record_success()
+                return result
+                
+            except asyncio.TimeoutError as e:
+                last_error = e
+                if self.timeout_policy.raise_on_timeout:
+                    raise
                     
             except Exception as e:
-                last_error = str(e)
-                if not isinstance(e, retry_config.retryable_exceptions):
-                    cb.record_failure()
-                    return NodeResult(success=False, error=last_error)
-            
-            cb.record_failure()
-            
-            # Don't delay on last attempt
-            if attempt < retry_config.max_retries:
-                delay = min(
-                    retry_config.base_delay_ms * (retry_config.exponential_base ** attempt),
-                    retry_config.max_delay_ms
-                )
-                if retry_config.jitter:
-                    import random
-                    delay *= (0.5 + random.random())
-                await asyncio.sleep(delay / 1000)
-        
-        return NodeResult(
-            success=False,
-            error=f"Max retries exceeded. Last error: {last_error}",
-            metadata={"max_retries": retry_config.max_retries}
-        )
+                last_error = e
+                self.circuit_breaker.record_failure()
+                
+                if not isinstance(e, self.retry_policy.retry_on):
+                    raise
+                    
+            attempt += 1
+            if attempt <= self.retry_policy.max_retries:
+                delay = self.retry_policy.get_delay(attempt)
+                await asyncio.sleep(delay)
+                
+        raise last_error or Exception("Max retries exceeded")
     
-    async def execute_with_timeout(
+    def execute(
         self,
-        node: Node,
-        context: FlowContext,
-    ) -> NodeResult:
-        """Execute a node with timeout handling."""
-        timeout_config = node.timeout_config or self.default_timeout
-        
-        if timeout_config.node_timeout_ms is None:
-            return await self.execute_with_retry(node, context)
-        
-        try:
-            result = await asyncio.wait_for(
-                self.execute_with_retry(node, context),
-                timeout=timeout_config.node_timeout_ms / 1000
-            )
-            return result
-        except asyncio.TimeoutError:
-            return NodeResult(
-                success=False,
-                error=f"Node {node.id} timed out after {timeout_config.node_timeout_ms}ms",
-                metadata={"timeout": True}
-            )
-    
-    def _get_next_nodes(
-        self,
-        current_node_id: str,
-        context: FlowContext,
-        nodes: Dict[str, Node],
-        edges: List[ConditionalEdge],
-    ) -> List[str]:
-        """Determine which nodes to execute next."""
-        next_nodes = []
-        
-        for edge in edges:
-            if edge.source != current_node_id:
-                continue
-            
-            # Check condition
-            if edge.condition:
-                try:
-                    result = edge.condition(context)
-                    if asyncio.iscoroutine(result):
-                        # For async conditions, we'll evaluate during execution
-                        pass
-                    if not result:
-                        continue
-                except Exception:
-                    continue
-            
-            if edge.target not in next_nodes:
-                next_nodes.append(edge.target)
-        
-        return next_nodes
-    
-    async def execute(
-        self,
-        nodes: Dict[str, Node],
-        edges: List[ConditionalEdge],
-        initial_state: Optional[FlowState] = None,
-        start_node: str = "start",
-        metadata: Optional[FlowMetadata] = None,
-    ) -> FlowResult[Any]:
-        """
-        Execute a flow graph.
-        
-        Args:
-            nodes: Dictionary of node_id -> Node
-            edges: List of edges connecting nodes
-            initial_state: Initial flow state
-            start_node: ID of the starting node
-            metadata: Execution metadata
-        
-        Returns:
-            FlowResult with execution outcome
-        """
-        start_time = time.time()
-        meta = metadata or FlowMetadata()
-        
-        context = FlowContext(
-            state=initial_state or FlowState(),
-            trace_id=meta.run_id,
-        )
-        
-        executed_nodes: List[str] = []
-        queue = deque([start_node])
-        visited: Set[str] = set()
-        
-        while queue and not context.is_cancelled():
-            current_id = queue.popleft()
-            
-            if current_id in visited:
-                continue
-            
-            if current_id not in nodes:
-                if current_id == "end":
-                    break
-                continue
-            
-            visited.add(current_id)
-            node = nodes[current_id]
-            context.node_id = current_id
-            
-            # Execute node with resilience
-            result = await self.execute_with_timeout(node, context)
-            
-            executed_nodes.append(current_id)
-            
-            if not result.success:
-                return FlowResult(
-                    success=False,
-                    error=result.error,
-                    state=context.state.to_dict(),
-                    execution_time_ms=(time.time() - start_time) * 1000,
-                    nodes_executed=executed_nodes,
-                    trace_id=meta.run_id,
-                )
-            
-            # Update state with node output
-            if result.output is not None:
-                context.state["last_output"] = result.output
-                if node.id not in ("start", "end"):
-                    context.state[node.id] = result.output
-            
-            # Get next nodes
-            next_ids = self._get_next_nodes(current_id, context, nodes, edges)
-            queue.extend(next_ids)
-        
-        if context.is_cancelled():
-            return FlowResult(
-                success=False,
-                error="Flow was cancelled",
-                state=context.state.to_dict(),
-                execution_time_ms=(time.time() - start_time) * 1000,
-                nodes_executed=executed_nodes,
-                trace_id=meta.run_id,
-            )
-        
-        return FlowResult(
-            success=True,
-            data=context.state.get("last_output"),
-            state=context.state.to_dict(),
-            execution_time_ms=(time.time() - start_time) * 1000,
-            nodes_executed=executed_nodes,
-            trace_id=meta.run_id,
-        )
-    
-    async def execute_streaming(
-        self,
-        nodes: Dict[str, Node],
-        edges: List[ConditionalEdge],
-        initial_state: Optional[FlowState] = None,
-        start_node: str = "start",
-    ) -> AsyncIterator[StreamChunk]:
-        """Execute flow and stream intermediate results."""
-        start_time = time.time()
-        context = FlowContext(state=initial_state or FlowState())
-        
-        queue = deque([start_node])
-        visited: Set[str] = set()
-        
-        while queue and not context.is_cancelled():
-            current_id = queue.popleft()
-            
-            if current_id in visited or current_id not in nodes:
-                continue
-            
-            visited.add(current_id)
-            node = nodes[current_id]
-            context.node_id = current_id
-            
-            # Yield start chunk
-            yield StreamChunk(
-                content=f"[START] Node: {current_id}",
-                node_id=current_id,
-                metadata={"event": "node_start"}
-            )
-            
-            result = await self.execute_with_timeout(node, context)
-            
-            # Yield result chunk
-            if result.output:
-                yield StreamChunk(
-                    content=str(result.output),
-                    node_id=current_id,
-                    metadata={"event": "node_result"}
-                )
-            
-            if not result.success:
-                yield StreamChunk(
-                    content=f"[ERROR] {result.error}",
-                    node_id=current_id,
-                    metadata={"event": "error"}
-                )
-                break
-            
-            # Update state
-            if result.output is not None:
-                context.state["last_output"] = result.output
-            
-            next_ids = self._get_next_nodes(current_id, context, nodes, edges)
-            queue.extend(next_ids)
-        
-        yield StreamChunk(
-            content="[END] Flow completed",
-            metadata={"event": "flow_end", "duration_ms": (time.time() - start_time) * 1000}
-        )
+        func: Callable,
+        *args,
+        **kwargs
+    ) -> Any:
+        """Synchronous execution wrapper."""
+        return asyncio.run(self.execute_with_resilience(func, *args, **kwargs))

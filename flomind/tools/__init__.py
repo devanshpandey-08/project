@@ -1,11 +1,6 @@
-"""Tools package."""
+"""Tools module for FlowMind."""
 
-from flomind.tools.tool import Tool, ToolParameter, ToolResult, tool, ToolRegistry
+from flomind.tools.tool import Tool, ToolResult
+from flomind.tools.registry import ToolRegistry
 
-__all__ = [
-    "Tool",
-    "ToolParameter",
-    "ToolResult",
-    "tool",
-    "ToolRegistry",
-]
+__all__ = ["Tool", "ToolResult", "ToolRegistry"]

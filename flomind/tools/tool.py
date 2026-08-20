@@ -1,259 +1,226 @@
-"""Tool system for FlowMind - type-safe function wrapping for agents."""
+"""Tool system for FlowMind."""
 
-import asyncio
-import json
+from typing import Any, Dict, List, Optional, Callable, Type, get_type_hints
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Type, get_type_hints, get_origin, get_args
-from functools import wraps
 import inspect
+import json
 
 
 @dataclass
-class ToolParameter:
-    """Definition of a tool parameter."""
-    name: str
-    type_hint: type
-    description: str = ""
-    required: bool = True
-    default: Any = None
+class ToolError(Exception):
+    """Error raised by tool execution."""
+    message: str
+    code: str = "TOOL_ERROR"
+    details: Optional[Dict[str, Any]] = None
+    
+    def __str__(self):
+        return f"[{self.code}] {self.message}"
 
 
 @dataclass
 class ToolResult:
     """Result of tool execution."""
     success: bool
-    data: Any = None
+    output: Any = None
     error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "output": self.output,
+            "error": self.error,
+            "metadata": self.metadata
+        }
 
 
 class Tool:
     """
-    A tool that can be used by agents.
+    Type-safe tool definition with automatic schema generation.
     
-    Tools wrap Python functions with metadata for LLM function calling.
-    They provide:
-    - Type-safe parameter validation
-    - Automatic schema generation
-    - Async/sync execution support
-    - Error handling
-    
-    Usage:
-        @tool(name="search", description="Search the web")
-        def search_tool(query: str, limit: int = 5) -> str:
-            return f"Results for: {query}"
-        
-        # Or programmatically:
-        tool = Tool(
-            name="calculator",
-            description="Perform calculations",
-            fn=lambda x, y: x + y,
-            parameters=[...]
-        )
+    Features:
+    - Automatic parameter validation
+    - OpenAI function calling compatible
+    - Async/sync support
+    - Rich metadata
     """
     
     def __init__(
         self,
         name: str,
         description: str,
-        fn: Callable,
-        parameters: Optional[List[ToolParameter]] = None,
-        return_type: Optional[type] = None,
+        func: Optional[Callable] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None
     ):
         self.name = name
         self.description = description
-        self.fn = fn
-        self.parameters = parameters or []
-        self.return_type = return_type
+        self.func = func
+        self.tags = tags or []
+        self._parameters = parameters
+        self._type_hints = {}
         
-        # Auto-extract parameters from function signature if not provided
-        if not parameters:
-            self._extract_parameters()
-    
-    def _extract_parameters(self) -> None:
-        """Extract parameters from function signature."""
-        try:
-            sig = inspect.signature(self.fn)
-            type_hints = get_type_hints(self.fn)
+        if func:
+            self._infer_parameters_from_func()
             
-            self.parameters = []
-            for param_name, param in sig.parameters.items():
-                if param_name in ("self", "cls"):
-                    continue
-                
-                param_type = type_hints.get(param_name, Any)
-                is_required = param.default == inspect.Parameter.empty
-                
-                self.parameters.append(ToolParameter(
-                    name=param_name,
-                    type_hint=param_type,
-                    description="",  # Would need docstring parsing
-                    required=is_required,
-                    default=None if is_required else param.default,
-                ))
+    def _infer_parameters_from_func(self):
+        """Infer parameters from function signature."""
+        if not self.func:
+            return
             
-            # Extract return type
-            if "return" in type_hints:
-                self.return_type = type_hints["return"]
-                
-        except Exception:
-            pass  # Keep empty parameters if extraction fails
-    
-    def _validate_params(self, **kwargs) -> None:
-        """Validate input parameters."""
-        for param in self.parameters:
-            if param.required and param.name not in kwargs:
-                raise ValueError(f"Missing required parameter: {param.name}")
-            
-            if param.name in kwargs:
-                value = kwargs[param.name]
-                # Basic type checking
-                if param.type_hint != Any and not isinstance(value, param.type_hint):
-                    # Handle optional types
-                    origin = get_origin(param.type_hint)
-                    if origin is not None:
-                        args = get_args(param.type_hint)
-                        if origin is list and not isinstance(value, list):
-                            raise TypeError(f"Parameter {param.name} must be a list")
-                        elif origin is dict and not isinstance(value, dict):
-                            raise TypeError(f"Parameter {param.name} must be a dict")
-    
-    async def execute(self, **kwargs) -> Any:
-        """Execute the tool with given parameters."""
-        self._validate_params(**kwargs)
+        sig = inspect.signature(self.func)
+        type_hints = get_type_hints(self.func)
+        self._type_hints = type_hints
         
-        try:
-            result = self.fn(**kwargs)
-            
-            # Handle async functions
-            if asyncio.iscoroutine(result):
-                result = await result
-            
-            return result
-            
-        except Exception as e:
-            raise RuntimeError(f"Tool execution failed: {e}")
-    
-    def to_schema(self) -> Dict[str, Any]:
-        """Convert tool to OpenAI function calling schema."""
         properties = {}
         required = []
         
-        for param in self.parameters:
-            prop = {
-                "type": self._type_to_json_schema(param.type_hint),
-                "description": param.description,
-            }
-            properties[param.name] = prop
+        for param_name, param in sig.parameters.items():
+            if param_name == 'self':
+                continue
+                
+            param_type = type_hints.get(param_name, Any)
             
-            if param.required:
-                required.append(param.name)
+            # Map Python types to JSON schema types
+            type_map = {
+                int: {"type": "integer"},
+                float: {"type": "number"},
+                str: {"type": "string"},
+                bool: {"type": "boolean"},
+                list: {"type": "array", "items": {"type": "string"}},
+                dict: {"type": "object"},
+                Any: {"type": "string"}
+            }
+            
+            param_schema = type_map.get(param_type, {"type": "string"})
+            
+            if param.default == inspect.Parameter.empty:
+                required.append(param_name)
+            else:
+                param_schema["default"] = param.default
+                
+            properties[param_name] = param_schema
+            
+        self._parameters = {
+            "type": "object",
+            "properties": properties,
+            "required": required
+        }
         
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        """Get tool parameters schema."""
+        return self._parameters or {}
+    
+    def to_openai_function(self) -> Dict[str, Any]:
+        """Convert to OpenAI function calling format."""
         return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            },
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters
         }
     
-    def _type_to_json_schema(self, t: type) -> str:
-        """Convert Python type to JSON schema type."""
-        if t == str:
-            return "string"
-        elif t == int:
-            return "integer"
-        elif t == float:
-            return "number"
-        elif t == bool:
-            return "boolean"
-        elif t == list or get_origin(t) == list:
-            return "array"
-        elif t == dict or get_origin(t) == dict:
-            return "object"
-        elif t == type(None):
-            return "null"
-        else:
-            return "string"  # Default
+    async def execute_async(self, **kwargs) -> ToolResult:
+        """Execute tool asynchronously."""
+        import asyncio
+        
+        if not self.func:
+            return ToolResult(
+                success=False,
+                error=f"Tool {self.name} has no function"
+            )
+            
+        try:
+            # Validate parameters
+            if self._parameters and "properties" in self._parameters:
+                required = self._parameters.get("required", [])
+                for req in required:
+                    if req not in kwargs:
+                        raise ToolError(
+                            f"Missing required parameter: {req}",
+                            code="MISSING_PARAMETER"
+                        )
+            
+            # Execute
+            if asyncio.iscoroutinefunction(self.func):
+                result = await self.func(**kwargs)
+            else:
+                result = self.func(**kwargs)
+                
+            return ToolResult(success=True, output=result)
+            
+        except ToolError as e:
+            return ToolResult(success=False, error=str(e))
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                error=f"Tool execution failed: {str(e)}"
+            )
     
-    def __repr__(self) -> str:
-        return f"Tool(name={self.name}, params={len(self.parameters)})"
-
-
-def tool(
-    name: Optional[str] = None,
-    description: str = "",
-) -> Callable[[Callable], Tool]:
-    """
-    Decorator to create a Tool from a function.
+    def execute(self, **kwargs) -> ToolResult:
+        """Execute tool synchronously."""
+        import asyncio
+        return asyncio.run(self.execute_async(**kwargs))
     
-    Usage:
-        @tool(name="web_search", description="Search the web")
-        def search(query: str, limit: int = 10) -> str:
-            return f"Search results for {query}"
-    """
-    def decorator(fn: Callable) -> Tool:
-        tool_name = name or fn.__name__
-        return Tool(
-            name=tool_name,
-            description=description,
-            fn=fn,
-        )
-    return decorator
+    def __call__(self, **kwargs) -> ToolResult:
+        """Allow calling tool directly."""
+        return self.execute(**kwargs)
 
 
 class ToolRegistry:
-    """Registry for managing available tools."""
+    """Registry for managing tools."""
     
     def __init__(self):
         self._tools: Dict[str, Tool] = {}
-    
-    def register(self, tool: Tool) -> "ToolRegistry":
+        
+    def register(self, tool: Tool) -> None:
         """Register a tool."""
         self._tools[tool.name] = tool
-        return self
-    
-    def unregister(self, name: str) -> "ToolRegistry":
-        """Unregister a tool by name."""
+        
+    def unregister(self, name: str) -> bool:
+        """Unregister a tool."""
         if name in self._tools:
             del self._tools[name]
-        return self
-    
+            return True
+        return False
+        
     def get(self, name: str) -> Optional[Tool]:
         """Get a tool by name."""
         return self._tools.get(name)
-    
+        
     def list_tools(self) -> List[Tool]:
         """List all registered tools."""
         return list(self._tools.values())
-    
-    def to_schemas(self) -> List[Dict[str, Any]]:
-        """Get schemas for all tools."""
-        return [t.to_schema() for t in self._tools.values()]
-    
-    def execute(self, name: str, **kwargs) -> Any:
+        
+    def to_openai_functions(self) -> List[Dict[str, Any]]:
+        """Convert all tools to OpenAI format."""
+        return [tool.to_openai_function() for tool in self._tools.values()]
+        
+    def execute(self, name: str, **kwargs) -> ToolResult:
         """Execute a tool by name."""
         tool = self.get(name)
         if not tool:
-            raise ValueError(f"Tool not found: {name}")
-        return asyncio.run(tool.execute(**kwargs))
-    
-    async def execute_async(self, name: str, **kwargs) -> Any:
-        """Execute a tool by name asynchronously."""
-        tool = self.get(name)
-        if not tool:
-            raise ValueError(f"Tool not found: {name}")
-        return await tool.execute(**kwargs)
-    
-    def __contains__(self, name: str) -> bool:
-        return name in self._tools
-    
-    def __len__(self) -> int:
-        return len(self._tools)
-    
-    def __repr__(self) -> str:
-        return f"ToolRegistry(tools={list(self._tools.keys())})"
+            return ToolResult(
+                success=False,
+                error=f"Tool not found: {name}"
+            )
+        return tool.execute(**kwargs)
+
+
+# Decorator for easy tool creation
+def tool(
+    name: Optional[str] = None,
+    description: str = "",
+    tags: Optional[List[str]] = None
+):
+    """Decorator to create a tool from a function."""
+    def decorator(func: Callable) -> Tool:
+        tool_name = name or func.__name__
+        tool_desc = description or (func.__doc__ or "").strip()
+        return Tool(
+            name=tool_name,
+            description=tool_desc,
+            func=func,
+            tags=tags
+        )
+    return decorator
