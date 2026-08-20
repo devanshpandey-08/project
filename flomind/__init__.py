@@ -1,125 +1,112 @@
 """
-FlowMind - The Last AI Orchestration Framework You'll Ever Need
+FlowMind - The Last AI Orchestration Framework You'll Ever Need.
 
-FlowMind completely replaces LangChain and LangGraph with a unified,
-type-safe, production-ready framework designed for enterprise scale.
-
-Key Features:
-- Single primitive: Flow (replaces Chains + Graphs)
-- Type-safe state management
-- Built-in security (encryption, PII detection, RBAC)
-- Native observability (tracing, metrics, audit logs)
-- Multi-agent orchestration
-- Resilience patterns (retry, timeout, circuit breaker)
-- Async-native execution
-- Provider-agnostic LLM interface
+Replaces LangChain & LangGraph with a unified, type-safe, secure, and 
+enterprise-grade architecture designed for production at scale.
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "FlowMind Team"
 
 # Core Primitives
-from flomind.core.flow import FlowState, FlowContext
-from flomind.core.node import Node, NodeType
-from flomind.core.edge import Edge, ConditionalEdge
+from flomind.core.flow import Flow, FlowState, FlowResult
+from flomind.core.node import Node, NodeType, NodeStatus
+from flomind.core.edge import Edge, EdgeCondition
 from flomind.core.executor import FlowExecutor
-from flomind.core import Flow, create_flow
 
 # Agents & Teams
-from flomind.agents.agent import Agent
-from flomind.agents.team import Team, TeamMode, TeamConfig, SequentialTeam, ParallelTeam, HierarchicalTeam
-from flomind.agents.roles import (
-    ManagerAgent,
-    ResearcherAgent,
-    WriterAgent,
-    CoderAgent,
-    ReviewerAgent,
-)
+from flomind.agents.agent import Agent, AgentRole
+from flomind.agents.team import Team, TeamStrategy
 
 # Tools System
-from flomind.tools.tool import Tool, tool, ToolRegistry
+from flomind.tools.tool import Tool, ToolResult, ToolError
+from flomind.tools.registry import ToolRegistry
 
 # Memory Systems
 from flomind.memory.short_term import ShortTermMemory
 from flomind.memory.long_term import LongTermMemory
-from flomind.memory.vector import VectorMemory
+from flomind.memory.vector_store import VectorStore
 
-# Security
-from flomind.security.encryptor import Encryptor
-from flomind.security.pii import PIIDetector, RedactionLevel
+# Security Suite
+from flomind.security.encryption import Encryptor
+from flomind.security.pii import PIIDetector, PIIType
 from flomind.security.sanitizer import InputSanitizer
-from flomind.security.rbac import RBACManager, Role, Permission
-from flomind.security.rate_limit import TokenBucketRateLimiter, SlidingWindowRateLimiter
-from flomind.security.audit_logger import AuditLogger, AuditEvent, AuditSensitivity
 
-# Observability - placeholder imports (modules to be implemented)
-# from flomind.observability.tracer import Tracer, Span
-# from flomind.observability.metrics import MetricsCollector
-# from flomind.observability.logger import StructuredLogger
+# Audit & Compliance
+from flomind.audit.logger import AuditLogger, AuditEvent, AuditEventType
+from flomind.audit.compliance import ComplianceChecker
 
-# Configuration - placeholder imports
-# from flomind.config.settings import FlowMindConfig, ConfigLoader
+# Access Control
+from flomind.rbac.manager import RBACManager
+from flomind.rbac.role import Role, Permission
 
-# Integrations - placeholder imports
-# from flomind.integrations.llm import LLMProvider, OpenAIProvider, AnthropicProvider
-# from flomind.integrations.vector import VectorStore, PineconeStore
+# Rate Limiting
+from flomind.rate_limit.limiter import RateLimiter, RateLimitPolicy
 
-# Utilities
-from flomind.core.types import FlowResult, StreamChunk
+# Resilience Patterns
+from flomind.core.resilience import RetryPolicy, TimeoutPolicy, CircuitBreaker
+
+# Observability
+from flomind.observability.tracer import Tracer, Span
+from flomind.observability.metrics import MetricsCollector
+
+# Configuration
+from flomind.config.settings import FlowMindConfig, Settings
+
+# Integrations (Lazy loaded to avoid heavy deps)
+def get_openai_client():
+    from flomind.integrations.openai_client import OpenAIClient
+    return OpenAIClient
+
+def get_anthropic_client():
+    from flomind.integrations.anthropic_client import AnthropicClient
+    return AnthropicClient
+
+def get_pinecone_client():
+    from flomind.integrations.pinecone_client import PineconeClient
+    return PineconeClient
+
+# Factory Functions
+from flomind.flows.factory import create_flow, create_agent, create_team
 
 __all__ = [
     # Core
-    "Flow",
-    "FlowState",
-    "FlowContext",
-    "Node",
-    "NodeType",
-    "Edge",
-    "ConditionalEdge",
-    "FlowExecutor",
+    "Flow", "FlowState", "FlowResult", "Node", "NodeType", "NodeStatus",
+    "Edge", "EdgeCondition", "FlowExecutor",
+    
     # Agents
-    "Agent",
-    "Team",
-    "ManagerAgent",
-    "ResearcherAgent",
-    "WriterAgent",
-    "CoderAgent",
-    "ReviewerAgent",
+    "Agent", "AgentRole", "Team", "TeamStrategy",
+    
     # Tools
-    "Tool",
-    "tool",
-    "ToolRegistry",
+    "Tool", "ToolResult", "ToolError", "ToolRegistry",
+    
     # Memory
-    "ShortTermMemory",
-    "LongTermMemory",
-    "VectorMemory",
+    "ShortTermMemory", "LongTermMemory", "VectorStore",
+    
     # Security
-    "Encryptor",
-    "PIIDetector",
-    "RedactionLevel",
-    "InputSanitizer",
-    "AuditLogger",
-    "AuditEvent",
-    "RBACManager",
-    "Role",
-    "Permission",
-    "RateLimiter",
-    "RateLimitPolicy",
+    "Encryptor", "PIIDetector", "PIIType", "InputSanitizer",
+    
+    # Audit
+    "AuditLogger", "AuditEvent", "ComplianceChecker",
+    
+    # RBAC
+    "RBACManager", "Role", "Permission",
+    
+    # Rate Limiting
+    "RateLimiter", "RateLimitPolicy",
+    
+    # Resilience
+    "RetryPolicy", "TimeoutPolicy", "CircuitBreaker",
+    
     # Observability
-    "Tracer",
-    "Span",
-    "MetricsCollector",
-    "StructuredLogger",
+    "Tracer", "Span", "MetricsCollector",
+    
     # Config
-    "FlowMindConfig",
-    "ConfigLoader",
+    "FlowMindConfig", "Settings",
+    
+    # Factories
+    "create_flow", "create_agent", "create_team",
+    
     # Integrations
-    "LLMProvider",
-    "OpenAIProvider",
-    "AnthropicProvider",
-    "VectorStore",
-    "PineconeStore",
-    # Types
-    "FlowResult",
-    "StreamChunk",
+    "get_openai_client", "get_anthropic_client", "get_pinecone_client",
 ]
