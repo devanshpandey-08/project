@@ -24,7 +24,7 @@ try:
     )
 except ImportError as e:
     print(f"⚠️  Warning: Could not import core modules: {e}")
-    Flow = Agent = Tool = create_flow = FlowState = None
+    Flow = Agent = Tool = create_flow = FlowState = Team = None
     SequentialTeam = ParallelTeam = HierarchicalTeam = None
 
 # Import Security Modules  
@@ -102,15 +102,18 @@ def test_rbac_enforcement():
     
     rbac = RBACManager()
     
-    admin_role = Role(name="admin_test", permissions=[Permission("*")])
-    viewer_role = Role(name="viewer_test", permissions=[Permission("flow:read")])
+    test_admin_role = Role(name="test_admin", permissions=[Permission("*")])
+    test_viewer_role = Role(name="test_viewer", permissions=[Permission("flow:read")])
     
-    rbac.add_role(admin_role)
-    rbac.add_role(viewer_role)
+    rbac.add_role(test_admin_role)
+    rbac.assign_role("user_test_admin", "test_admin")
+    rbac.add_role(test_viewer_role)
+    rbac.assign_role("user_test_admin", "test_admin")
+    rbac.assign_role("user_test_viewer", "test_viewer")
     
-    assert rbac.check_permission("admin_test", "flow:delete") == True
-    assert rbac.check_permission("viewer_test", "flow:delete") == False
-    assert rbac.check_permission("viewer_test", "flow:read") == True
+    assert rbac.check_permission("user_test_admin", "flow:delete") == True
+    assert rbac.check_permission("user_test_viewer", "flow:delete") == False
+    assert rbac.check_permission("user_test_viewer", "flow:read") == True
     print("✅ RBAC Enforcement: Active")
 
 @pytest.mark.asyncio
@@ -195,7 +198,7 @@ def test_flow_state():
 
 def test_team_creation():
     """Test team creation."""
-    if Team is None:
+    if SequentialTeam is None:
         pytest.skip("Team not available")
     
     agent1 = Agent(name="Agent1", role="Role1")
