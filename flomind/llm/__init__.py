@@ -1,18 +1,22 @@
 """LLM module exports."""
 from .provider import (
-    LLM, Provider, LLMConfig, LLMResponse, Message, ChatRole, 
-    StreamChunk, OpenAILLM, MockLLM, create_llm
+    LLM,
+    LLMConfig,
+    LLMProvider,
+    LLMResponse,
+    Message,
+    ChatRole,
+    MockLLM,
+    create_llm,
 )
 
 __all__ = [
     'LLM',
-    'Provider',
     'LLMConfig',
+    'LLMProvider',
     'LLMResponse',
     'Message',
     'ChatRole',
-    'StreamChunk',
-    'OpenAILLM',
     'MockLLM',
     'create_llm',
 ]

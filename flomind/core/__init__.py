@@ -1,23 +1,30 @@
 """Core module exports."""
-from .state import FlowState, NodeResult, StateSnapshot, TypedState
+from .state import FlowState, NodeResult, StateSnapshot
 from .flow import (
-    Flow, Node, Edge, State,
-    NodeType, EdgeCondition, NodeConfig, FlowMetadata, CompiledFlow, create_flow
+    Flow,
+    Node,
+    Edge,
+    NodeType,
+    EdgeCondition,
+    NodeConfig,
+    FlowMetadata,
+    CompiledFlow,
+    create_flow,
+    State,  # Backwards compatible alias
 )
 
 __all__ = [
-    'FlowState',
-    'NodeResult', 
-    'StateSnapshot',
-    'TypedState',
     'Flow',
     'Node',
     'Edge',
-    'State',
     'NodeType',
     'EdgeCondition',
     'NodeConfig',
     'FlowMetadata',
     'CompiledFlow',
     'create_flow',
+    'FlowState',
+    'NodeResult',
+    'StateSnapshot',
+    'State',
 ]
