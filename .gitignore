@@ -1,61 +1,38 @@
 ```
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-ENV/
-env.bak/
-.venv/
 env/
-ENV/
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Coverage reports
+venv/
+.venv/
+.venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
 .coverage
-htmlcov/
 .coverage.*
-
-# Testing
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+*.pot
+*.po
+*~
 .pytest_cache/
 .mypy_cache/
+.hypothesis/
 
-# Environment variables
-.env
-.env.local
-*.env*
+# Security specific
+flomind/security/*.log
+flomind/security/__pycache__/
+
+# Tests
+tests/__pycache__/
+tests/.pytest_cache/
 
 # Distribution / packaging
 .Python
@@ -71,101 +48,22 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
+# OS
+.DS_Store
+Thumbs.db
 
-# Translations
-*.mo
-*.pot
-
-# Django
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask
-instance/
-.webassets-cache
-
-# Scrapy
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# pipenv
-Pipfile.lock
-
-# PEP 582
-__pypackages__/
-
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
-# Sage
-home/sage/.sage/
-
-# Environments
+# Environment variables
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre
-.pyre/
-
-# End of .gitignore
+.env.local
+*.env
 ```

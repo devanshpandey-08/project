@@ -220,3 +220,34 @@ Refine your position considering others' viewpoints:"""
     
     def __repr__(self) -> str:
         return f"Team(name={self.name}, mode={self.config.mode.value}, agents={len(self.agents)})"
+
+
+# Convenience classes for common team patterns
+class SequentialTeam(Team):
+    """Team where agents work sequentially, each building on previous work."""
+    def __init__(self, name: str, agents: List[Agent] = None, **kwargs):
+        config = TeamConfig(name=name, mode=TeamMode.SEQUENTIAL, **kwargs)
+        super().__init__(name=name, config=config)
+        if agents:
+            for agent in agents:
+                self.add_agent(agent)
+
+
+class ParallelTeam(Team):
+    """Team where agents work simultaneously and results are combined."""
+    def __init__(self, name: str, agents: List[Agent] = None, **kwargs):
+        config = TeamConfig(name=name, mode=TeamMode.PARALLEL, **kwargs)
+        super().__init__(name=name, config=config)
+        if agents:
+            for agent in agents:
+                self.add_agent(agent)
+
+
+class HierarchicalTeam(Team):
+    """Team with a manager delegating to worker agents."""
+    def __init__(self, name: str, agents: List[Agent] = None, manager: Agent = None, **kwargs):
+        config = TeamConfig(name=name, mode=TeamMode.HIERARCHICAL, **kwargs)
+        super().__init__(name=name, manager=manager, config=config)
+        if agents:
+            for agent in agents:
+                self.add_agent(agent)

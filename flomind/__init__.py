@@ -27,7 +27,7 @@ from flomind.core import Flow, create_flow
 
 # Agents & Teams
 from flomind.agents.agent import Agent
-from flomind.agents.team import Team
+from flomind.agents.team import Team, TeamMode, TeamConfig, SequentialTeam, ParallelTeam, HierarchicalTeam
 from flomind.agents.roles import (
     ManagerAgent,
     ResearcherAgent,
@@ -48,6 +48,9 @@ from flomind.memory.vector import VectorMemory
 from flomind.security.encryptor import Encryptor
 from flomind.security.pii import PIIDetector, RedactionLevel
 from flomind.security.sanitizer import InputSanitizer
+from flomind.security.rbac import RBACManager, Role, Permission
+from flomind.security.rate_limit import TokenBucketRateLimiter, SlidingWindowRateLimiter
+from flomind.security.audit_logger import AuditLogger, AuditEvent, AuditSensitivity
 
 # Observability - placeholder imports (modules to be implemented)
 # from flomind.observability.tracer import Tracer, Span
