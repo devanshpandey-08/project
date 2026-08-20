@@ -59,6 +59,15 @@ from .observability.tracer import Tracer, Trace, Span, Metrics
 # Vector Store
 from .vector.store import VectorStore, InMemoryVectorStore, Document
 
+# Configuration (NEW - Production Ready)
+from .config import (
+    FlowMindConfig,
+    ConfigManager,
+    get_config,
+    load_config,
+    load_config_from_env,
+)
+
 # Convenience exports
 __all__ = [
     # Core
@@ -118,6 +127,13 @@ __all__ = [
     'VectorStore',
     'InMemoryVectorStore',
     'Document',
+    
+    # Configuration (Production Ready)
+    'FlowMindConfig',
+    'ConfigManager',
+    'get_config',
+    'load_config',
+    'load_config_from_env',
 ]
 
 
