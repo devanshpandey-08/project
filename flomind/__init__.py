@@ -1,112 +1,84 @@
 """
-FlowMind - The Last AI Orchestration Framework You'll Ever Need.
+FlowMind - The Last AI Orchestration Framework You'll Need
 
-Replaces LangChain & LangGraph with a unified, type-safe, secure, and 
-enterprise-grade architecture designed for production at scale.
+Designed for production reality: LLM latency dominates, debugging matters,
+and developer experience wins.
 """
 
 __version__ = "2.0.0"
 __author__ = "FlowMind Team"
 
 # Core Primitives
-from flomind.core.flow import Flow, FlowState, FlowResult
-from flomind.core.node import Node, NodeType, NodeStatus
-from flomind.core.edge import Edge, EdgeCondition
-from flomind.core.executor import FlowExecutor
+from flomind.core.flow import Flow, FlowBuilder
+from flomind.core.state import State, StateSnapshot
+from flomind.core.node import Node, NodeType
 
 # Agents & Teams
-from flomind.agents.agent import Agent, AgentRole
-from flomind.agents.team import Team, TeamStrategy
+from flomind.agents.agent import Agent
+from flomind.agents.team import Team, TeamMode
 
-# Tools System
-from flomind.tools.tool import Tool, ToolResult, ToolError
+# Tools
+from flomind.tools.tool import Tool, tool
 from flomind.tools.registry import ToolRegistry
 
-# Memory Systems
+# Memory
 from flomind.memory.short_term import ShortTermMemory
 from flomind.memory.long_term import LongTermMemory
-from flomind.memory.vector_store import VectorStore
 
-# Security Suite
-from flomind.security.encryption import Encryptor
-from flomind.security.pii import PIIDetector, PIIType
-from flomind.security.sanitizer import InputSanitizer
-
-# Audit & Compliance
-from flomind.audit.logger import AuditLogger, AuditEvent, AuditEventType
-from flomind.audit.compliance import ComplianceChecker
-
-# Access Control
-from flomind.rbac.manager import RBACManager
-from flomind.rbac.role import Role, Permission
-
-# Rate Limiting
-from flomind.rate_limit.limiter import RateLimiter, RateLimitPolicy
-
-# Resilience Patterns
-from flomind.core.resilience import RetryPolicy, TimeoutPolicy, CircuitBreaker
-
-# Observability
-from flomind.observability.tracer import Tracer, Span
+# Observability (The Real Differentiator)
+from flomind.observability.tracer import FlowTracer, Span
 from flomind.observability.metrics import MetricsCollector
+from flomind.observability.debugger import FlowDebugger
 
-# Configuration
-from flomind.config.settings import FlowMindConfig, Settings
+# Resilience (Production Ready)
+from flomind.resilience.retry import RetryStrategy
+from flomind.resilience.circuit_breaker import CircuitBreaker
+from flomind.resilience.timeout import TimeoutPolicy
 
-# Integrations (Lazy loaded to avoid heavy deps)
-def get_openai_client():
-    from flomind.integrations.openai_client import OpenAIClient
-    return OpenAIClient
+# Integrations
+from flomind.integrations.openai import OpenAIProvider
+from flomind.integrations.anthropic import AnthropicProvider
+from flomind.integrations.vector_store import VectorStore
 
-def get_anthropic_client():
-    from flomind.integrations.anthropic_client import AnthropicClient
-    return AnthropicClient
-
-def get_pinecone_client():
-    from flomind.integrations.pinecone_client import PineconeClient
-    return PineconeClient
-
-# Factory Functions
-from flomind.flows.factory import create_flow, create_agent, create_team
+# Types
+from flomind.types.context import ExecutionContext
+from flomind.types.result import Result, Success, Failure
 
 __all__ = [
     # Core
-    "Flow", "FlowState", "FlowResult", "Node", "NodeType", "NodeStatus",
-    "Edge", "EdgeCondition", "FlowExecutor",
-    
+    "Flow",
+    "FlowBuilder",
+    "State",
+    "StateSnapshot",
+    "Node",
+    "NodeType",
     # Agents
-    "Agent", "AgentRole", "Team", "TeamStrategy",
-    
+    "Agent",
+    "Team",
+    "TeamMode",
     # Tools
-    "Tool", "ToolResult", "ToolError", "ToolRegistry",
-    
+    "Tool",
+    "tool",
+    "ToolRegistry",
     # Memory
-    "ShortTermMemory", "LongTermMemory", "VectorStore",
-    
-    # Security
-    "Encryptor", "PIIDetector", "PIIType", "InputSanitizer",
-    
-    # Audit
-    "AuditLogger", "AuditEvent", "ComplianceChecker",
-    
-    # RBAC
-    "RBACManager", "Role", "Permission",
-    
-    # Rate Limiting
-    "RateLimiter", "RateLimitPolicy",
-    
-    # Resilience
-    "RetryPolicy", "TimeoutPolicy", "CircuitBreaker",
-    
+    "ShortTermMemory",
+    "LongTermMemory",
     # Observability
-    "Tracer", "Span", "MetricsCollector",
-    
-    # Config
-    "FlowMindConfig", "Settings",
-    
-    # Factories
-    "create_flow", "create_agent", "create_team",
-    
+    "FlowTracer",
+    "Span",
+    "MetricsCollector",
+    "FlowDebugger",
+    # Resilience
+    "RetryStrategy",
+    "CircuitBreaker",
+    "TimeoutPolicy",
     # Integrations
-    "get_openai_client", "get_anthropic_client", "get_pinecone_client",
+    "OpenAIProvider",
+    "AnthropicProvider",
+    "VectorStore",
+    # Types
+    "ExecutionContext",
+    "Result",
+    "Success",
+    "Failure",
 ]

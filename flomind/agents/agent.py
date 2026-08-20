@@ -1,197 +1,156 @@
-"""AI Agent system for FlowMind."""
+"""
+FlowMind Agents
 
-from typing import Any, Dict, List, Optional, Callable
+Autonomous agents that can use tools, maintain memory, and collaborate.
+Unlike LangChain's complex agent setup, FlowMind agents are simple yet powerful.
+"""
+
 from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Callable
 import asyncio
-import uuid
-from enum import Enum
+import json
 
-from flomind.tools.tool import Tool, ToolRegistry, ToolResult
-
-
-class AgentRole(Enum):
-    """Pre-defined agent roles."""
-    ASSISTANT = "assistant"
-    RESEARCHER = "researcher"
-    WRITER = "writer"
-    CODER = "coder"
-    REVIEWER = "reviewer"
-    MANAGER = "manager"
-    CRITIC = "critic"
+from flomind.tools.tool import Tool, ToolRegistry
+from flomind.memory.short_term import ShortTermMemory
 
 
 @dataclass
 class AgentConfig:
     """Configuration for an agent."""
-    name: str
-    role: AgentRole = AgentRole.ASSISTANT
-    system_prompt: str = ""
-    tools: List[Tool] = field(default_factory=list)
+    name: str = "Agent"
+    role: str = "Assistant"
+    system_prompt: str = "You are a helpful assistant."
     max_iterations: int = 10
     temperature: float = 0.7
-    model: str = "gpt-4"
-    
+    model: str = "gpt-4o"
 
+
+@dataclass
 class Agent:
     """
-    Autonomous AI Agent with tool usage capabilities.
+    An autonomous agent that can use tools to accomplish tasks.
     
-    Features:
-    - Tool-based reasoning
-    - Multi-step task execution
-    - Self-correction
-    - Memory integration
+    Key Features:
+    - Tool usage with automatic schema generation
+    - Short-term memory for conversation context
+    - Iterative reasoning (thought → action → observation)
+    - Simple API for complex behavior
     """
+    config: AgentConfig = field(default_factory=AgentConfig)
+    tools: List[Tool] = field(default_factory=list)
+    memory: ShortTermMemory = field(default_factory=ShortTermMemory)
     
-    def __init__(
-        self,
-        name: str,
-        role: str = "assistant",
-        system_prompt: str = "",
-        tools: Optional[List[Tool]] = None,
-        model: str = "gpt-4",
-        **kwargs
-    ):
-        self.id = str(uuid.uuid4())
-        self.name = name
-        self.role = role
-        self.system_prompt = system_prompt or f"You are a {role} assistant."
-        self.model = model
-        self.tools = tools or []
+    def __post_init__(self):
         self.tool_registry = ToolRegistry()
-        
-        # Register tools
         for tool in self.tools:
             self.tool_registry.register(tool)
-            
-        self._memory: List[Dict[str, Any]] = []
-        self._iteration_count = 0
-        
-    def add_tool(self, tool: Tool) -> 'Agent':
-        """Add a tool to the agent."""
-        self.tools.append(tool)
-        self.tool_registry.register(tool)
-        return self
-        
-    def remove_tool(self, name: str) -> bool:
-        """Remove a tool from the agent."""
-        result = self.tool_registry.unregister(name)
-        if result:
-            self.tools = [t for t in self.tools if t.name != name]
-        return result
-        
-    def get_available_tools(self) -> List[Dict[str, Any]]:
-        """Get tools in OpenAI function format."""
-        return self.tool_registry.to_openai_functions()
-        
-    async def think(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    
+    async def execute(self, task: str, 
+                     context: Optional[Dict[str, Any]] = None) -> str:
         """
-        Think about the task and decide on actions.
+        Execute a task using tools and reasoning.
         
-        In production, this would call an LLM. Here we simulate the behavior.
+        This is a simplified agent loop - in production, this would
+        integrate with actual LLM providers.
         """
-        self._iteration_count += 1
+        self.memory.add_message("user", task)
         
-        if self._iteration_count > 10:
-            return {
-                "action": "final_answer",
-                "content": "Max iterations reached.",
-                "tool_calls": []
-            }
+        iteration = 0
+        while iteration < self.config.max_iterations:
+            iteration += 1
             
-        # Simulate LLM decision making
-        # In real implementation, this calls the LLM with tools schema
-        available_tools = self.get_available_tools()
+            # Build prompt with context
+            messages = [
+                {"role": "system", "content": self.config.system_prompt},
+                *self.memory.get_messages(),
+            ]
+            
+            # In production: call LLM here
+            # For now, simulate agent behavior
+            if not self.tools:
+                # No tools, just return a simple response
+                response = f"Completed: {task}"
+                self.memory.add_message("assistant", response)
+                return response
+            
+            # Simulate tool usage (in production, LLM decides which tool)
+            # This is placeholder logic
+            tool_results = []
+            for tool in self.tools:
+                try:
+                    # Try to extract parameters from task (simplified)
+                    result = await tool.execute(query=task)
+                    tool_results.append(f"{tool.name}: {result}")
+                except Exception:
+                    pass
+            
+            if tool_results:
+                response = "\n".join(tool_results)
+            else:
+                response = f"Task completed: {task}"
+            
+            self.memory.add_message("assistant", response)
+            return response
         
-        # Simple heuristic: if task mentions tool names, use them
-        tool_calls = []
-        for tool in available_tools:
-            if tool["name"].lower() in task.lower():
-                tool_calls.append({
-                    "id": str(uuid.uuid4()),
-                    "name": tool["name"],
-                    "arguments": {"query": task}
-                })
-                
-        if tool_calls:
-            return {
-                "action": "use_tools",
-                "tool_calls": tool_calls
-            }
+        return "Max iterations reached"
+    
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Get OpenAI-compatible schemas for all tools."""
+        return self.tool_registry.get_all_schemas()
+
+
+class Team:
+    """
+    A team of agents working together.
+    
+    Unlike single agents, teams can:
+    - Divide work among specialists
+    - Review each other's output
+    - Handle complex multi-step tasks
+    """
+    
+    def __init__(self, agents: List[Agent], mode: str = "sequential"):
+        self.agents = {agent.config.name: agent for agent in agents}
+        self.mode = mode  # sequential, parallel, hierarchical
+        self.results: Dict[str, Any] = {}
+    
+    async def execute(self, task: str) -> Dict[str, Any]:
+        """Execute a task with the team."""
+        if self.mode == "sequential":
+            return await self._execute_sequential(task)
+        elif self.mode == "parallel":
+            return await self._execute_parallel(task)
         else:
-            return {
-                "action": "final_answer",
-                "content": f"I've analyzed: {task}",
-                "tool_calls": []
-            }
-            
-    async def execute_tool_call(self, tool_call: Dict[str, Any]) -> ToolResult:
-        """Execute a single tool call."""
-        tool_name = tool_call.get("name")
-        arguments = tool_call.get("arguments", {})
+            raise ValueError(f"Unknown team mode: {self.mode}")
+    
+    async def _execute_sequential(self, task: str) -> Dict[str, Any]:
+        """Execute agents one after another, passing results."""
+        current_task = task
         
-        result = self.tool_registry.execute(tool_name, **arguments)
+        for name, agent in self.agents.items():
+            result = await agent.execute(current_task)
+            self.results[name] = result
+            current_task = f"Previous result: {result}\n\nContinue with: {task}"
         
-        # Store in memory
-        self._memory.append({
-            "type": "tool_call",
-            "tool": tool_name,
-            "arguments": arguments,
-            "result": result.output if result.success else None,
-            "error": result.error
-        })
+        return self.results
+    
+    async def _execute_parallel(self, task: str) -> Dict[str, Any]:
+        """Execute all agents in parallel."""
+        async def run_agent(name: str, agent: Agent):
+            result = await agent.execute(task)
+            return name, result
         
-        return result
+        tasks = [run_agent(name, agent) for name, agent in self.agents.items()]
+        results = await asyncio.gather(*tasks)
         
-    async def run(
-        self,
-        task: str,
-        context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Run the agent on a task.
-        
-        Returns final answer after potentially multiple tool uses.
-        """
-        self._iteration_count = 0
-        self._memory.append({"type": "task", "content": task})
-        
-        while self._iteration_count < 10:
-            # Think
-            thought = await self.think(task, context)
-            
-            if thought["action"] == "final_answer":
-                return {
-                    "success": True,
-                    "answer": thought["content"],
-                    "iterations": self._iteration_count,
-                    "memory": self._memory.copy()
-                }
-                
-            elif thought["action"] == "use_tools":
-                for tool_call in thought.get("tool_calls", []):
-                    result = await self.execute_tool_call(tool_call)
-                    if not result.success:
-                        # Handle error
-                        pass
-                        
-                task = f"Continue with: {task}"
-                
-        return {
-            "success": False,
-            "answer": "Max iterations exceeded",
-            "iterations": self._iteration_count,
-            "memory": self._memory.copy()
-        }
-        
-    def run_sync(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Run agent synchronously."""
-        return asyncio.run(self.run(task, context))
-        
-    def clear_memory(self) -> None:
-        """Clear agent memory."""
-        self._memory = []
-        
-    def get_memory(self) -> List[Dict[str, Any]]:
-        """Get agent memory."""
-        return self._memory.copy()
+        self.results = dict(results)
+        return self.results
+    
+    def add_agent(self, agent: Agent):
+        """Add an agent to the team."""
+        self.agents[agent.config.name] = agent
+    
+    def remove_agent(self, name: str):
+        """Remove an agent from the team."""
+        if name in self.agents:
+            del self.agents[name]

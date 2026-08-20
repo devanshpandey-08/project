@@ -1,271 +1,376 @@
 """
-Comprehensive Production Test Suite for FlowMind.
+FlowMind Production Test Suite
 
-Tests cover:
-- Core flow execution
-- Security (encryption, PII, sanitization)
-- RBAC and rate limiting
-- Audit logging
-- Agents and teams
-- Tools system
-- Resilience patterns
-- Observability
+Tests the REAL production scenarios:
+1. Debugging when a 10-node flow fails at step 7
+2. State recovery after rate limit errors
+3. Observability into token usage and latency per step
+4. Developer experience - how fast can you understand the codebase
 """
 
-import pytest
 import asyncio
-import time
-from typing import Any, Dict
+import pytest
+from datetime import datetime
 
-# Import all components
-from flomind import (
-    Flow, FlowState, NodeType, FlowExecutor,
-    Agent, Team, Tool, ToolRegistry,
-    Encryptor, PIIDetector, InputSanitizer,
-    AuditLogger, AuditEventType,
-    RBACManager, Role, Permission,
-    RateLimiter, RateLimitPolicy,
-    RetryPolicy, TimeoutPolicy, CircuitBreaker,
-    Tracer, MetricsCollector,
-    create_flow, create_agent, create_team
-)
+# Import core components
+from flomind.core.flow import Flow, FlowBuilder, FlowConfig
+from flomind.core.node import Node, NodeType, NodeConfig
+from flomind.core.state import State, StateSnapshot
+
+# Import observability
+from flomind.observability.tracer import FlowTracer, Trace, Span
+from flomind.observability.debugger import FlowDebugger
+from flomind.observability.metrics import MetricsCollector
+
+# Import resilience
+from flomind.resilience.retry import RetryStrategy, CircuitBreaker, ResilientExecutor
+
+# Import tools
+from flomind.tools.tool import Tool, tool
+from flomind.tools.registry import ToolRegistry
+
+# Import memory
+from flomind.memory.short_term import ShortTermMemory
 
 
-class TestCoreFlow:
-    """Test core flow functionality."""
+# ============================================================================
+# TEST 1: Debugging - When flow fails at step 7, see what happened at steps 1-6
+# ============================================================================
+
+class TestDebuggingExperience:
+    """Test the key differentiator: debugging complex flows."""
     
-    def test_flow_creation(self):
-        """Test basic flow creation."""
-        flow = Flow(name="test_flow")
-        assert flow.name == "test_flow"
-        assert flow.id is not None
+    @pytest.mark.asyncio
+    async def test_state_history_after_failure(self):
+        """When flow fails at node 7, inspect state at nodes 1-6."""
         
-    def test_flow_execution(self):
-        """Test flow execution with nodes."""
-        def process(state, **kwargs):
-            return {"result": "processed"}
+        execution_log = []
+        
+        def make_node_func(node_id: str, should_fail: bool = False):
+            async def func(**kwargs):
+                execution_log.append(f"{node_id}_start")
+                if should_fail:
+                    raise ValueError(f"Simulated failure at {node_id}")
+                return f"result_from_{node_id}"
+            return func
+        
+        # Build a 10-node flow where node 7 fails
+        builder = FlowBuilder("debug_test_flow")
+        
+        for i in range(1, 11):
+            should_fail = (i == 7)
+            builder.add_node(
+                id=f"node_{i}",
+                func=make_node_func(f"node_{i}", should_fail),
+                node_type=NodeType.TASK,
+                inputs=[],
+                retry_count=0  # No retries for this test
+            )
             
-        flow = Flow(name="test")
-        flow.add_node("start", NodeType.START, "Start")
-        flow.add_node("process", NodeType.TASK, "Process", func=process)
-        flow.add_node("end", NodeType.END, "End")
-        flow.add_edge("start", "process")
-        flow.add_edge("process", "end")
+            if i > 1:
+                builder.connect(f"node_{i-1}", f"node_{i}")
         
-        result = flow.execute({})
-        assert result.success is True
-        assert result.trace_id != ""
+        flow = builder.start_at("node_1").build()
         
-    def test_flow_state_management(self):
-        """Test type-safe state management."""
-        state = FlowState()
-        state.set("key1", "value1")
-        state.update({"key2": "value2"})
+        # Execute and expect failure
+        state = await flow.execute({})
         
-        assert state.get("key1") == "value1"
-        assert state.get("key2") == "value2"
-        assert len(state.history) == 2
-
-
-class TestSecurity:
-    """Test security features."""
+        # Verify we can see what happened before failure
+        assert len(execution_log) >= 6, "Should have executed at least 6 nodes"
+        
+        # Check state history - can we see what happened at each step?
+        failed_nodes = state.get_failed_nodes()
+        assert "node_7" in failed_nodes, "Node 7 should be in failed nodes"
+        
+        # Get node history for debugging
+        node_6_history = state.get_node_history("node_6")
+        assert len(node_6_history) > 0, "Should have history for node 6"
+        
+        # Verify debug string is helpful
+        debug_output = state.debug_string()
+        assert "Failed nodes" in debug_output
+        assert "node_7" in debug_output
+        
+        print("\n=== DEBUG OUTPUT ===")
+        print(debug_output)
+        print("====================\n")
     
-    def test_encryption_decryption(self):
-        """Test AES-256-GCM encryption."""
-        encryptor = Encryptor()
-        plaintext = "Secret message for testing"
+    @pytest.mark.asyncio
+    async def test_trace_debug_report(self):
+        """Test comprehensive debug report generation."""
         
-        ciphertext = encryptor.encrypt(plaintext)
-        decrypted = encryptor.decrypt(ciphertext)
+        tracer = FlowTracer()
+        debugger = FlowDebugger()
         
-        assert decrypted == plaintext
-        assert ciphertext != plaintext
+        # Create a trace with multiple spans
+        trace = tracer.start_trace("test_flow")
         
-    def test_pii_detection(self):
-        """Test PII detection."""
-        detector = PIIDetector()
+        span1 = tracer.start_span(trace.trace_id, "fetch_data", kind="tool")
+        tracer.finish_span(span1.span_id, success=True, output_data={"data": "test"})
         
-        text = "Contact john@example.com or call 555-123-4567"
-        matches = detector.detect(text)
+        span2 = tracer.start_span(trace.trace_id, "process", kind="node")
+        tracer.finish_span(span2.span_id, success=True, output_data={"processed": True})
         
-        assert len(matches) >= 1
+        span3 = tracer.start_span(trace.trace_id, "llm_call", kind="llm")
+        tracer.finish_span(span3.span_id, success=False, error="Rate limit exceeded",
+                          tokens_used=150)
         
-    def test_pii_redaction(self):
-        """Test PII redaction."""
-        detector = PIIDetector()
-        text = "Email: test@example.com, SSN: 123-45-6789"
+        tracer.finish_trace(trace.trace_id)
+        debugger.attach_trace(trace)
         
-        redacted = detector.redact(text)
+        # Generate debug report
+        report = debugger.generate_debug_report(trace.trace_id)
         
-        assert "test@example.com" not in redacted
-        assert "123-45-6789" not in redacted
+        assert "FLOW TRACE REPORT" in report
+        assert "Failed" in report  # Status should show failed
+        assert "llm_call" in report
+        assert "Rate limit" in report
         
-    def test_xss_sanitization(self):
-        """Test XSS prevention."""
-        sanitizer = InputSanitizer()
-        
-        malicious = '<script>alert("XSS")</script>Hello'
-        sanitized = sanitizer.sanitize(malicious)
-        
-        assert "<script>" not in sanitized
+        print("\n=== DEBUG REPORT ===")
+        print(report)
+        print("====================\n")
 
 
-class TestRBAC:
-    """Test role-based access control."""
+# ============================================================================
+# TEST 2: State Recovery After Rate Limit Errors
+# ============================================================================
+
+class TestStateRecovery:
+    """Test recovery from transient failures like rate limits."""
     
-    def test_builtin_roles(self):
-        """Test built-in system roles."""
-        rbac = RBACManager()
+    @pytest.mark.asyncio
+    async def test_retry_with_exponential_backoff(self):
+        """Test retry strategy handles rate limits correctly."""
         
-        rbac.assign_role("user1", "admin")
-        assert rbac.has_permission("user1", "flow:read")
+        call_count = 0
         
-    def test_permission_check(self):
-        """Test permission checking."""
-        rbac = RBACManager()
-        rbac.assign_role("user1", "viewer")
+        async def flaky_api():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise Exception("Rate limit exceeded (429)")
+            return "success"
         
-        assert rbac.has_permission("user1", "flow:read")
-        assert not rbac.has_permission("user1", "flow:delete")
-
-
-class TestRateLimiting:
-    """Test rate limiting functionality."""
-    
-    def test_rate_limiter_basic(self):
-        """Test basic rate limiting."""
-        limiter = RateLimiter(RateLimitPolicy(burst_size=5))
-        
-        result, metadata = limiter.allow_request("test_user")
-        assert result is True
-
-
-class TestAuditLogging:
-    """Test audit logging for compliance."""
-    
-    def test_audit_event_creation(self):
-        """Test creating audit events."""
-        logger = AuditLogger(mask_sensitive=False)
-        
-        event = logger.log(
-            event_type=AuditEventType.FLOW_EXECUTION,
-            action="execute",
-            resource="flow",
-            status="success",
-            user_id="test_user"
+        retry_strategy = RetryStrategy(
+            max_retries=3,
+            base_delay=0.01,  # Fast for testing
+            jitter=False
         )
         
-        assert event.event_id is not None
-        assert event.user_id == "test_user"
-
-
-class TestAgents:
-    """Test agent functionality."""
+        executor = ResilientExecutor(retry_strategy=retry_strategy)
+        
+        result = await executor.execute(flaky_api)
+        
+        assert result == "success"
+        assert call_count == 3, "Should have retried twice before success"
     
-    def test_agent_creation(self):
-        """Test agent creation."""
-        agent = Agent(name="TestAgent", role="assistant")
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_opens_on_failures(self):
+        """Test circuit breaker prevents cascade failures."""
         
-        assert agent.name == "TestAgent"
-
-
-class TestTools:
-    """Test tool system."""
-    
-    def test_tool_creation(self):
-        """Test tool creation."""
-        def my_func(x: int) -> int:
-            return x * 2
-            
-        tool = Tool(name="doubler", description="Doubles a number", func=my_func)
+        cb = CircuitBreaker(
+            failure_threshold=3,
+            recovery_timeout=0.1  # Fast for testing
+        )
         
-        assert tool.name == "doubler"
-        
-    def test_tool_execution(self):
-        """Test tool execution."""
-        tool = Tool(name="adder", description="Adds numbers", func=lambda x, y: x + y)
-        
-        result = tool.execute(x=5, y=3)
-        
-        assert result.success is True
-        assert result.output == 8
-
-
-class TestResilience:
-    """Test resilience patterns."""
-    
-    def test_retry_policy(self):
-        """Test retry policy."""
-        policy = RetryPolicy(max_retries=3, delay=0.1)
-        
-        assert policy.max_retries == 3
-        
-    def test_circuit_breaker(self):
-        """Test circuit breaker."""
-        cb = CircuitBreaker(failure_threshold=3)
-        
+        # Simulate failures
         for _ in range(3):
             cb.record_failure()
-            
-        assert cb.state == "open"
+        
+        assert cb.state.value == "open", "Circuit should be open after 3 failures"
+        assert not cb.can_execute(), "Should not allow execution when open"
+        
+        # Wait for recovery timeout
+        await asyncio.sleep(0.15)
+        
+        # Should transition to half-open
+        assert cb.can_execute(), "Should allow test call after timeout"
+        assert cb.state.value == "half_open"
 
+
+# ============================================================================
+# TEST 3: Observability - Token Usage and Latency Per Step
+# ============================================================================
 
 class TestObservability:
-    """Test tracing and metrics."""
+    """Test token tracking and latency breakdown."""
     
-    def test_tracer_spans(self):
-        """Test distributed tracing."""
-        tracer = Tracer()
+    def test_trace_token_tracking(self):
+        """Track tokens used by each node."""
         
-        with tracer.trace("test_operation", key="value") as span:
-            time.sleep(0.01)
-            
-        spans = tracer.export()
+        tracer = FlowTracer()
+        trace = tracer.start_trace("llm_flow")
         
-        assert len(spans) == 1
+        # Simulate LLM node with token usage
+        span1 = tracer.start_span(trace.trace_id, "summarize", kind="llm")
+        tracer.finish_span(span1.span_id, success=True, 
+                          tokens_used=500, cost_usd=0.0025)
         
-    def test_metrics_collection(self):
-        """Test metrics collection."""
-        metrics = MetricsCollector()
+        span2 = tracer.start_span(trace.trace_id, "translate", kind="llm")
+        tracer.finish_span(span2.span_id, success=True,
+                          tokens_used=300, cost_usd=0.0015)
         
-        metrics.increment("requests_total", method="GET")
-        metrics.increment("requests_total", method="GET")
+        tracer.finish_trace(trace.trace_id)
         
-        assert metrics.get_counter("requests_total", method="GET") == 2.0
-
-
-class TestFactoryFunctions:
-    """Test factory functions."""
+        # Verify totals
+        assert trace.total_tokens == 800
+        assert abs(trace.total_cost_usd - 0.004) < 0.0001
+        
+        # Verify latency breakdown
+        breakdown = trace.get_latency_breakdown()
+        assert "llm" in breakdown
     
-    def test_create_flow_factory(self):
-        """Test flow factory function."""
-        def process(state, **kwargs):
-            return {"done": True}
+    def test_metrics_aggregation(self):
+        """Test aggregate metrics collection."""
+        
+        collector = MetricsCollector()
+        tracer = FlowTracer()
+        
+        # Record multiple traces
+        for i in range(5):
+            trace = tracer.start_trace(f"flow_{i}")
+            span = tracer.start_span(trace.trace_id, "process")
+            tracer.finish_span(span.span_id, success=(i != 3))  # One failure
+            tracer.finish_trace(trace.trace_id)
             
-        flow = create_flow(
-            name="factory_flow",
-            nodes={"process": process},
-            edges=[("start", "process"), ("process", "end")]
-        )
+            collector.record_execution(trace)
         
-        assert flow.name == "factory_flow"
+        summary = collector.get_summary()
         
-    def test_create_agent_factory(self):
-        """Test agent factory function."""
-        agent = create_agent(
-            name="FactoryAgent",
-            role="helper"
-        )
-        
-        assert agent.name == "FactoryAgent"
-        
-    def test_create_team_factory(self):
-        """Test team factory function."""
-        agents = [create_agent(name=f"Agent{i}", role="worker") for i in range(2)]
-        team = create_team(name="FactoryTeam", agents=agents)
-        
-        assert team.name == "FactoryTeam"
+        assert summary["total_executions"] == 5
+        assert summary["success_rate"] == "80.00%"  # 4/5 successful
 
+
+# ============================================================================
+# TEST 4: Developer Experience - Simple API for Complex Flows
+# ============================================================================
+
+class TestDeveloperExperience:
+    """Test how easy it is to build and understand flows."""
+    
+    @pytest.mark.asyncio
+    async def test_fluent_builder_api(self):
+        """Test the fluent builder makes flow creation intuitive."""
+        
+        def fetch(query: str) -> str:
+            return f"results_for_{query}"
+        
+        def process(data: str) -> str:
+            return f"processed_{data}"
+        
+        # Fluent API should be readable
+        flow = (FlowBuilder("search_flow")
+            .add_node("fetch", fetch, inputs=["query"])
+            .add_node("process", process, inputs=["data"])
+            .connect("fetch", "process")
+            .start_at("fetch")
+            .end_at("process")
+            .build())
+        
+        # Visualize should help understand the flow
+        visualization = flow.visualize()
+        
+        assert "search_flow" in visualization
+        assert "fetch" in visualization
+        assert "process" in visualization
+        assert "└─>" in visualization  # Shows connections
+        
+        print("\n=== FLOW VISUALIZATION ===")
+        print(visualization)
+        print("==========================\n")
+    
+    @pytest.mark.asyncio
+    async def test_tool_decorator_simplicity(self):
+        """Test tool decorator makes tool creation simple."""
+        
+        @tool(description="Search for information")
+        def search(query: str) -> str:
+            """Search the web for information."""
+            return f"Results for: {query}"
+        
+        # Should automatically create Tool with schema
+        assert isinstance(search, Tool)
+        assert search.name == "search"
+        assert "Search" in search.description
+        
+        # Should generate OpenAI schema
+        schema = search.to_openai_schema()
+        
+        assert schema["type"] == "function"
+        assert schema["function"]["name"] == "search"
+        assert "parameters" in schema["function"]
+    
+    @pytest.mark.asyncio
+    async def test_memory_is_intuitive(self):
+        """Test memory API is simple and clear."""
+        
+        memory = ShortTermMemory(max_messages=5)
+        
+        # Add messages naturally
+        memory.add_message("user", "Hello!")
+        memory.add_message("assistant", "Hi there!")
+        memory.add_message("user", "How are you?")
+        
+        # Get messages in OpenAI format
+        messages = memory.get_messages()
+        
+        assert len(messages) == 3
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "Hello!"
+        
+        # Token counting should work
+        token_count = memory.get_token_count()
+        assert token_count > 0
+
+
+# ============================================================================
+# TEST 5: Parallel Execution (Real Performance Test)
+# ============================================================================
+
+class TestParallelExecution:
+    """Test true parallel execution for performance."""
+    
+    @pytest.mark.asyncio
+    async def test_parallel_node_execution(self):
+        """Test nodes execute in parallel when possible."""
+        
+        execution_times = {}
+        
+        async def slow_node(node_id: str, delay: float):
+            start = datetime.utcnow()
+            await asyncio.sleep(delay)
+            end = datetime.utcnow()
+            execution_times[node_id] = {
+                "start": start,
+                "end": end,
+                "duration": (end - start).total_seconds()
+            }
+            return f"result_{node_id}"
+        
+        # Create flow with 3 parallel nodes
+        builder = FlowBuilder("parallel_test")
+        
+        builder.add_node("parallel_1", lambda: slow_node("p1", 0.1), node_type=NodeType.TASK)
+        builder.add_node("parallel_2", lambda: slow_node("p2", 0.1), node_type=NodeType.TASK)
+        builder.add_node("parallel_3", lambda: slow_node("p3", 0.1), node_type=NodeType.TASK)
+        
+        # All start from entry, no connections = parallel
+        flow = builder.build()
+        
+        start_time = datetime.utcnow()
+        state = await flow.execute({})
+        total_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        # If truly parallel, total time should be ~0.1s, not ~0.3s
+        # Allow some overhead
+        assert total_time < 0.3, f"Should execute in parallel, took {total_time}s"
+        
+        print(f"\nParallel execution completed in {total_time:.3f}s\n")
+
+
+# ============================================================================
+# Run all tests
+# ============================================================================
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
