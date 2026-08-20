@@ -30,6 +30,8 @@ class NodeConfig:
     cache_enabled: bool = True
     cache_ttl_seconds: int = 3600
     log_level: str = "INFO"
+    retry_delay_base: float = 1.0  # Base delay for exponential backoff
+    max_retry_delay: float = 60.0  # Maximum delay between retries
 
 
 @dataclass

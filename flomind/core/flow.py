@@ -295,12 +295,31 @@ class FlowBuilder:
     def __init__(self, name: str):
         self.flow = Flow(FlowConfig(name=name))
     
-    def add_node(self, id: str, func: Callable, 
+    def add_node(self, id: str, func: Callable,
                  node_type: NodeType = NodeType.TASK,
                  inputs: Optional[List[str]] = None,
                  outputs: Optional[List[str]] = None,
+                 retry_count: int = None,
+                 timeout_seconds: float = None,
                  **config_kwargs) -> 'FlowBuilder':
         """Add a node to the flow."""
+        
+        # Handle legacy retry_policy parameter
+        if 'retry_policy' in config_kwargs:
+            retry_policy = config_kwargs.pop('retry_policy')
+            if hasattr(retry_policy, 'max_retries'):
+                retry_count = retry_policy.max_retries
+            if hasattr(retry_policy, 'base_delay'):
+                config_kwargs['retry_delay_base'] = retry_policy.base_delay
+            if hasattr(retry_policy, 'max_delay'):
+                config_kwargs['max_retry_delay'] = retry_policy.max_delay
+        
+        # Override defaults if provided
+        if retry_count is not None:
+            config_kwargs['retry_count'] = retry_count
+        if timeout_seconds is not None:
+            config_kwargs['timeout_seconds'] = timeout_seconds
+            
         node = Node(
             id=id,
             node_type=node_type,
@@ -311,7 +330,6 @@ class FlowBuilder:
         )
         self.flow.add_node(node)
         return self
-    
     def add_llm_node(self, id: str, func: Callable,
                      inputs: Optional[List[str]] = None,
                      **config_kwargs) -> 'FlowBuilder':

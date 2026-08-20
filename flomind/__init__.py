@@ -35,6 +35,9 @@ from flomind.resilience.retry import RetryStrategy
 from flomind.resilience.circuit_breaker import CircuitBreaker
 from flomind.resilience.timeout import TimeoutPolicy
 
+# Alias for convenience
+RetryPolicy = RetryStrategy
+
 # Integrations
 from flomind.integrations.openai import OpenAIProvider
 from flomind.integrations.anthropic import AnthropicProvider
