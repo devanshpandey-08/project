@@ -1,35 +1,39 @@
-```
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Dependencies
+# Testing
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Environment
 .venv/
 venv/
 env/
 .env
 .env.local
-.env.*
+*.env.*
+
+# Dependencies
+*.egg-info/
+
 
 # Build artifacts
 dist/
 build/
+target/
 *.egg-info/
 
 # Logs
 *.log
 
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# IDE
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *.tmp
-```
