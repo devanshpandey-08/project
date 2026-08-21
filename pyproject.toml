@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegisflow"
+version = "1.0.0"
+description = "Production-Grade AI Orchestration with Dual-Mode (Creative/Compliance)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "AegisFlow Team", email = "team@aegisflow.dev"}]
+dependencies = [
+    "cryptography>=41.0",
+    "openai>=1.0",
+    "anthropic>=0.20",
+    "aiosqlite>=0.19",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
+    "mypy>=1.5",
+    "black>=23.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["aegisflow*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
