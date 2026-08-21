@@ -1,5 +1,7 @@
 ```
 # Compiled and build artifacts
+# Python
+__pycache__/
 *.pyc
 __pycache__/
 *.o
@@ -11,7 +13,13 @@ __pycache__/
 *.a
 *.out
 
-# Dependencies
+# Testing
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Environment
 .venv/
 venv/
 node_modules/
@@ -21,6 +29,20 @@ dist/
 build/
 target/
 .gradle/
+env/
+.env
+.env.local
+*.env.*
+
+# Dependencies
+*.egg-info/
+
+
+# Build artifacts
+dist/
+build/
+target/
+*.egg-info/
 
 # Logs and temp files
 *.log
@@ -70,3 +92,9 @@ htmlcov/
 *.tar.xz
 *.tar.zst
 ```
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
