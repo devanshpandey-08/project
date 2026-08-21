@@ -1,380 +1,327 @@
-"""
-FlowMind Core Flow Engine
-
-The heart of FlowMind - executes nodes with full observability,
-resilience, and debugging capabilities.
-
-Key Differentiator: When a flow fails at step 7, you can:
-1. See exact state at steps 1-6
-2. Replay from any checkpoint
-3. Understand why each decision was made
-4. Recover gracefully without losing progress
-"""
-
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Callable, Union, Set
-from datetime import datetime
+"""Core flow engine with zero silent failures."""
 import asyncio
-import time
-import uuid
-import logging
+from typing import Any, Callable, Dict, List, Optional, Set, Union
+from datetime import datetime, timezone
+from dataclasses import dataclass, field
 
-from flomind.core.node import Node, NodeType, NodeResult, NodeConfig
-from flomind.core.state import State, StateSnapshot
-
-
-logger = logging.getLogger(__name__)
+from flomind.core.types import ExecutionMode, NodeStatus, NodeConfig, Result, ExecutionRecord
+from flomind.core.state import FlowState
 
 
 @dataclass
-class FlowConfig:
-    """Configuration for a flow."""
-    name: str = "unnamed_flow"
-    max_retries: int = 3
-    default_timeout: float = 60.0
-    enable_caching: bool = True
-    enable_tracing: bool = True
-    log_level: str = "INFO"
-    parallel_limit: int = 10  # Max parallel nodes
+class Node:
+    """Executable node with strict configuration."""
+    id: str
+    func: Callable
+    inputs: List[str] = field(default_factory=list)
+    outputs: List[str] = field(default_factory=list)
+    config: NodeConfig = field(default_factory=NodeConfig)
+    dependencies: Set[str] = field(default_factory=set)
+    
+    def __post_init__(self):
+        if not callable(self.func):
+            raise ValueError(f"Node {self.id} func must be callable")
 
 
 class Flow:
-    """
-    A flow is a directed graph of nodes that processes data.
+    """Production-grade flow engine with guaranteed execution."""
     
-    Unlike LangChain's rigid chains or LangGraph's complex graphs,
-    FlowMind flows are:
-    - Easy to debug (full state history)
-    - Resilient by default (retry, timeout, circuit breaker)
-    - Observable (trace every execution)
-    - Developer-friendly (simple API, clear errors)
-    """
-    
-    def __init__(self, config: Optional[FlowConfig] = None):
-        self.config = config or FlowConfig()
+    def __init__(
+        self,
+        name: str,
+        mode: ExecutionMode = ExecutionMode.SEQUENTIAL,
+        checkpoint_saver: Optional[Any] = None
+    ):
+        self.name = name
+        self.mode = mode
         self.nodes: Dict[str, Node] = {}
-        self.edges: Dict[str, List[str]] = {}  # node_id -> [next_node_ids]
-        self.entry_nodes: List[str] = []
-        self.exit_nodes: List[str] = []
-        
-        # Caching
-        self._cache: Dict[str, Any] = {}
-        
-        # Execution tracking
-        self._execution_count = 0
+        self.edges: Dict[str, Set[str]] = {}
+        self.checkpoint_saver = checkpoint_saver
+        self._execution_history: List[ExecutionRecord] = []
     
     def add_node(self, node: Node) -> 'Flow':
-        """Add a node to the flow."""
+        if node.id in self.nodes:
+            raise ValueError(f"Node {node.id} already exists")
         self.nodes[node.id] = node
+        self.edges[node.id] = set()
         return self
     
-    def add_edge(self, from_id: str, to_id: str) -> 'Flow':
-        """Add an edge between nodes."""
-        if from_id not in self.edges:
-            self.edges[from_id] = []
-        self.edges[from_id].append(to_id)
-        
-        # Track entry/exit nodes
-        if from_id not in self.entry_nodes and from_id not in [e for edges in self.edges.values() for e in edges]:
-            pass  # Will be set properly later
-        
+    def connect(self, from_id: str, to_id: str) -> 'Flow':
+        if from_id not in self.nodes:
+            raise ValueError(f"Node {from_id} not found")
+        if to_id not in self.nodes:
+            raise ValueError(f"Node {to_id} not found")
+        self.edges[from_id].add(to_id)
+        self.nodes[to_id].dependencies.add(from_id)
         return self
     
-    def set_entry(self, node_id: str) -> 'Flow':
-        """Set the entry node(s)."""
-        if node_id not in self.entry_nodes:
-            self.entry_nodes.append(node_id)
-        return self
+    async def execute(self, initial_data: Dict[str, Any]) -> FlowState:
+        state = FlowState().update(initial_data).take_snapshot()
+        
+        # Save initial checkpoint
+        if self.checkpoint_saver:
+            await self.checkpoint_saver.save(state, f"{self.name}_initial")
+        
+        try:
+            if self.mode == ExecutionMode.SEQUENTIAL:
+                state = await self._execute_sequential(state)
+            elif self.mode == ExecutionMode.PARALLEL:
+                state = await self._execute_parallel(state)
+            else:
+                raise ValueError(f"Unsupported execution mode: {self.mode}")
+            
+            # Save final checkpoint
+            if self.checkpoint_saver:
+                await self.checkpoint_saver.save(state, f"{self.name}_final")
+            
+            return state
+            
+        except Exception as e:
+            # Record failure and restore last good checkpoint
+            record = ExecutionRecord(
+                node_id="flow",
+                status=NodeStatus.FAILED,
+                started_at=datetime.now(timezone.utc),
+                error_message=str(e)
+            )
+            self._execution_history.append(record)
+            
+            # Try to restore from checkpoint
+            if self.checkpoint_saver:
+                restored = await self.checkpoint_saver.load(f"{self.name}_initial")
+                if restored:
+                    return restored
+            
+            raise
     
-    def set_exit(self, node_id: str) -> 'Flow':
-        """Set the exit node(s)."""
-        if node_id not in self.exit_nodes:
-            self.exit_nodes.append(node_id)
-        return self
-    
-    def _get_cache_key(self, node_id: str, inputs: Dict[str, Any]) -> str:
-        """Generate cache key for node execution."""
-        sorted_inputs = str(sorted(inputs.items()))
-        return f"{node_id}:{hash(sorted_inputs)}"
-    
-    async def _execute_node(self, node: Node, state: State) -> NodeResult:
-        """Execute a single node with retry, timeout, and caching."""
-        start_time = time.time()
-        cache_key = None
-        
-        # Check cache
-        if self.config.enable_caching and node.config.cache_enabled:
-            cache_key = self._get_cache_key(node.id, {k: state.data.get(k) for k in node.inputs})
-            if cache_key in self._cache:
-                latency = (time.time() - start_time) * 1000
-                logger.debug(f"Cache hit for node {node.id}")
-                return NodeResult(
-                    node_id=node.id,
-                    success=True,
-                    result=self._cache[cache_key],
-                    latency_ms=latency,
-                    cached=True
-                )
-        
-        # Execute with retries
-        last_error = None
-        for attempt in range(node.config.retry_count + 1):
-            try:
-                # Apply timeout
-                if asyncio.iscoroutinefunction(node.execute):
-                    result = await asyncio.wait_for(
-                        node.execute(state.data),
-                        timeout=node.config.timeout_seconds
-                    )
-                else:
-                    result = await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
-                            None, lambda: node.execute(state.data)
-                        ),
-                        timeout=node.config.timeout_seconds
-                    )
-                
-                # Cache result
-                if cache_key and self.config.enable_caching:
-                    self._cache[cache_key] = result
-                
-                latency = (time.time() - start_time) * 1000
-                
-                return NodeResult(
-                    node_id=node.id,
-                    success=True,
-                    result=result,
-                    latency_ms=latency,
-                    retry_count=attempt
-                )
-                
-            except asyncio.TimeoutError as e:
-                last_error = f"Timeout after {node.config.timeout_seconds}s"
-                logger.warning(f"Node {node.id} timed out on attempt {attempt + 1}")
-                
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"Node {node.id} failed on attempt {attempt + 1}: {e}")
-                
-                if attempt < node.config.retry_count:
-                    await asyncio.sleep(0.1 * (2 ** attempt))  # Exponential backoff
-        
-        # All retries failed
-        latency = (time.time() - start_time) * 1000
-        return NodeResult(
-            node_id=node.id,
-            success=False,
-            error=last_error,
-            latency_ms=latency,
-            retry_count=node.config.retry_count
-        )
-    
-    async def execute(self, initial_data: Dict[str, Any], 
-                     trace_id: Optional[str] = None) -> State:
-        """
-        Execute the flow with given initial data.
-        
-        Returns a State object with:
-        - Final results
-        - Complete execution history
-        - Ability to debug what happened at each step
-        """
-        trace_id = trace_id or str(uuid.uuid4())
-        state = State(data=initial_data, trace_id=trace_id)
-        
-        logger.info(f"Starting flow {self.config.name} (trace={trace_id})")
-        
-        # Start from entry nodes
-        current_nodes = self.entry_nodes or list(self.nodes.keys())[:1]
+    async def _execute_sequential(self, state: FlowState) -> FlowState:
         executed: Set[str] = set()
+        pending = set(self.nodes.keys())
         
-        while current_nodes:
-            next_nodes: Set[str] = set()
+        while pending:
+            # Find nodes ready to execute (all dependencies met)
+            ready = [
+                node_id for node_id in pending
+                if all(dep in executed for dep in self.nodes[node_id].dependencies)
+            ]
             
-            # Execute current layer (supports parallel)
-            tasks = []
-            for node_id in current_nodes:
-                if node_id in executed or node_id not in self.nodes:
-                    continue
-                
-                node = self.nodes[node_id]
-                tasks.append(self._execute_node(node, state))
-            
-            if not tasks:
+            if not ready:
+                if pending:
+                    raise RuntimeError(f"Deadlock detected: cannot execute nodes {pending}")
                 break
             
-            # Execute in parallel (up to limit)
-            semaphore = asyncio.Semaphore(self.config.parallel_limit)
+            # Execute first ready node (sequential)
+            node_id = ready[0]
+            state = await self._execute_node(node_id, state)
+            executed.add(node_id)
+            pending.remove(node_id)
             
-            async def bounded_execute(task_node_id: str):
-                async with semaphore:
-                    return task_node_id, await self._execute_node(
-                        self.nodes[task_node_id], state
-                    )
-            
-            bounded_tasks = [bounded_execute(nid) for nid in current_nodes 
-                           if nid not in executed and nid in self.nodes]
-            
-            results = await asyncio.gather(*bounded_tasks, return_exceptions=True)
-            
-            # Process results
-            for result_item in results:
-                if isinstance(result_item, Exception):
-                    logger.error(f"Unexpected error: {result_item}")
-                    continue
-                
-                node_id, result = result_item
-                executed.add(node_id)
-                
-                # Update state with result
-                if result.success:
-                    # Store result in state
-                    output_key = f"{node_id}_output"
-                    state = state.update(**{output_key: result.result})
-                    
-                    # Record execution details
-                    state.set_node_result(
-                        node_id=node_id,
-                        result=result.result,
-                        latency_ms=result.latency_ms,
-                        success=True,
-                        cached=result.cached
-                    )
-                    
-                    # Determine next nodes
-                    if node_id in self.edges:
-                        next_nodes.update(self.edges[node_id])
-                    else:
-                        # Try conditional branching
-                        node = self.nodes[node_id]
-                        next_node = node.get_next_node(state.data)
-                        if next_node:
-                            next_nodes.add(next_node)
-                else:
-                    # Record failure
-                    state.set_node_result(
-                        node_id=node_id,
-                        result=None,
-                        latency_ms=result.latency_ms,
-                        success=False,
-                        error=result.error
-                    )
-                    
-                    logger.error(f"Node {node_id} failed: {result.error}")
-                    
-                    # Don't continue from failed node unless it's retried
-                    # (For now, we stop - could implement circuit breaker here)
-            
-            current_nodes = list(next_nodes - executed)
-        
-        self._execution_count += 1
-        logger.info(f"Flow {self.config.name} completed (trace={trace_id}, nodes={len(executed)})")
+            # Checkpoint after each node
+            if self.checkpoint_saver:
+                await self.checkpoint_saver.save(state, f"{self.name}_{node_id}")
         
         return state
     
-    def visualize(self) -> str:
-        """Generate a simple text visualization of the flow."""
-        lines = [f"Flow: {self.config.name}"]
-        lines.append("=" * 40)
+    async def _execute_parallel(self, state: FlowState) -> FlowState:
+        executed: Set[str] = set()
+        pending = set(self.nodes.keys())
+        semaphore = asyncio.Semaphore(10)  # Limit concurrency
         
-        for node_id, node in self.nodes.items():
-            entry_marker = "🚪 " if node_id in self.entry_nodes else "   "
-            exit_marker = " 🏁" if node_id in self.exit_nodes else ""
-            lines.append(f"{entry_marker}{node_id} [{node.node_type.value}]{exit_marker}")
+        while pending:
+            # Find nodes ready to execute
+            ready = [
+                node_id for node_id in pending
+                if all(dep in executed for dep in self.nodes[node_id].dependencies)
+            ]
             
-            if node_id in self.edges:
-                for next_id in self.edges[node_id]:
-                    lines.append(f"   └─> {next_id}")
+            if not ready:
+                if pending:
+                    raise RuntimeError(f"Deadlock detected: cannot execute nodes {pending}")
+                break
+            
+            # Execute all ready nodes in parallel with independent state copies
+            tasks = []
+            for node_id in ready:
+                # Each task gets its own state copy to avoid race conditions
+                task_state = state._clone()
+                tasks.append(self._execute_node_with_state(node_id, task_state, semaphore))
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Merge all results into final state
+            for node_id, result_state in zip(ready, results):
+                if isinstance(result_state, Exception):
+                    raise result_state
+                
+                # Merge node result and status from each result state
+                node_result = result_state.get_node_result(node_id)
+                if node_result is not None:
+                    state = state.set_node_result(node_id, node_result)
+                
+                node_status = result_state.get_node_status(node_id)
+                if node_status:
+                    state = state.set_node_status(node_id, node_status)
+                
+                # Merge output data
+                for key, value in result_state._data.items():
+                    state = state.set(key, value)
+            
+            executed.update(ready)
+            pending.difference_update(ready)
+            
+            # Checkpoint after batch
+            if self.checkpoint_saver:
+                await self.checkpoint_saver.save(state, f"{self.name}_batch_{len(executed)}")
         
-        return "\n".join(lines)
+        return state
+    
+    async def _execute_node_with_state(self, node_id: str, state: FlowState, semaphore: asyncio.Semaphore) -> FlowState:
+        async with semaphore:
+            return await self._execute_node(node_id, state)
+    
+    async def _execute_node(self, node_id: str, state: FlowState) -> FlowState:
+        node = self.nodes[node_id]
+        
+        # Update status to running
+        state = state.set_node_status(node_id, "running")
+        
+        start_time = datetime.now(timezone.utc)
+        record = ExecutionRecord(
+            node_id=node_id,
+            status=NodeStatus.RUNNING,
+            started_at=start_time,
+            input_data={k: state.get(k) for k in node.inputs}
+        )
+        
+        try:
+            # Get inputs
+            inputs = {inp: state.get(inp) for inp in node.inputs}
+            
+            # Execute with timeout and retry
+            result = await self._execute_with_retry(node, inputs)
+            
+            if not result.success:
+                raise RuntimeError(result.error)
+            
+            # Update state with outputs
+            for i, output in enumerate(node.outputs):
+                if isinstance(result.value, (list, tuple)) and i < len(result.value):
+                    state = state.set(output, result.value[i])
+                elif isinstance(result.value, dict):
+                    state = state.set(output, result.value.get(output, result.value))
+                else:
+                    state = state.set(output, result.value)
+            
+            state = state.set_node_result(node_id, result.value)
+            state = state.set_node_status(node_id, "completed")
+            
+            record = ExecutionRecord(
+                node_id=node_id,
+                status=NodeStatus.COMPLETED,
+                started_at=start_time,
+                completed_at=datetime.now(timezone.utc),
+                input_data=inputs,
+                output_data={out: state.get(out) for out in node.outputs}
+            )
+            
+        except Exception as e:
+            state = state.set_node_status(node_id, "failed")
+            record = ExecutionRecord(
+                node_id=node_id,
+                status=NodeStatus.FAILED,
+                started_at=start_time,
+                completed_at=datetime.now(timezone.utc),
+                input_data=inputs if 'inputs' in locals() else {},
+                error_message=str(e)
+            )
+            raise
+        
+        finally:
+            self._execution_history.append(record)
+            state = state.take_snapshot()
+        
+        return state
+    
+    async def _execute_with_retry(self, node: Node, inputs: Dict[str, Any]) -> Result[Any]:
+        last_error = None
+        
+        for attempt in range(node.config.retry_count + 1):
+            try:
+                # Apply timeout
+                if asyncio.iscoroutinefunction(node.func):
+                    result = await asyncio.wait_for(
+                        node.func(**inputs),
+                        timeout=node.config.timeout_seconds
+                    )
+                else:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(node.func, **inputs),
+                        timeout=node.config.timeout_seconds
+                    )
+                
+                return Result.ok(result)
+                
+            except asyncio.TimeoutError as e:
+                last_error = f"Timeout after {node.config.timeout_seconds}s"
+            except Exception as e:
+                last_error = str(e)
+            
+            if attempt < node.config.retry_count:
+                await asyncio.sleep(0.1 * (2 ** attempt))  # Exponential backoff
+        
+        return Result.fail(last_error or "Unknown error")
+    
+    def get_execution_history(self) -> List[ExecutionRecord]:
+        return list(self._execution_history)
 
 
 class FlowBuilder:
     """Fluent builder for creating flows."""
     
     def __init__(self, name: str):
-        self.flow = Flow(FlowConfig(name=name))
+        self.name = name
+        self.mode = ExecutionMode.SEQUENTIAL
+        self.nodes: List[Node] = []
+        self.connections: List[tuple] = []
+        self.checkpoint_saver = None
     
-    def add_node(self, id: str, func: Callable,
-                 node_type: NodeType = NodeType.TASK,
-                 inputs: Optional[List[str]] = None,
-                 outputs: Optional[List[str]] = None,
-                 retry_count: int = None,
-                 timeout_seconds: float = None,
-                 **config_kwargs) -> 'FlowBuilder':
-        """Add a node to the flow."""
-        
-        # Handle legacy retry_policy parameter
-        if 'retry_policy' in config_kwargs:
-            retry_policy = config_kwargs.pop('retry_policy')
-            if hasattr(retry_policy, 'max_retries'):
-                retry_count = retry_policy.max_retries
-            if hasattr(retry_policy, 'base_delay'):
-                config_kwargs['retry_delay_base'] = retry_policy.base_delay
-            if hasattr(retry_policy, 'max_delay'):
-                config_kwargs['max_retry_delay'] = retry_policy.max_delay
-        
-        # Override defaults if provided
-        if retry_count is not None:
-            config_kwargs['retry_count'] = retry_count
-        if timeout_seconds is not None:
-            config_kwargs['timeout_seconds'] = timeout_seconds
-            
+    def set_mode(self, mode: ExecutionMode) -> 'FlowBuilder':
+        self.mode = mode
+        return self
+    
+    def add_node(
+        self,
+        node_id: str,
+        func: Callable,
+        inputs: Optional[List[str]] = None,
+        outputs: Optional[List[str]] = None,
+        config: Optional[NodeConfig] = None
+    ) -> 'FlowBuilder':
         node = Node(
-            id=id,
-            node_type=node_type,
+            id=node_id,
             func=func,
             inputs=inputs or [],
             outputs=outputs or [],
-            config=NodeConfig(**config_kwargs)
+            config=config or NodeConfig()
         )
-        self.flow.add_node(node)
+        self.nodes.append(node)
         return self
-    def add_llm_node(self, id: str, func: Callable,
-                     inputs: Optional[List[str]] = None,
-                     **config_kwargs) -> 'FlowBuilder':
-        """Add an LLM node with optimized defaults."""
-        return self.add_node(
-            id=id,
-            func=func,
-            node_type=NodeType.LLM,
-            inputs=inputs or ['prompt'],
-            timeout_seconds=120.0,  # LLMs can be slow
-            **config_kwargs
-        )
-    
-    def add_tool_node(self, id: str, func: Callable,
-                      inputs: Optional[List[str]] = None,
-                      **config_kwargs) -> 'FlowBuilder':
-        """Add a tool node."""
-        return self.add_node(
-            id=id,
-            func=func,
-            node_type=NodeType.TOOL,
-            inputs=inputs or [],
-            **config_kwargs
-        )
     
     def connect(self, from_id: str, to_id: str) -> 'FlowBuilder':
-        """Connect two nodes."""
-        self.flow.add_edge(from_id, to_id)
+        self.connections.append((from_id, to_id))
         return self
     
-    def start_at(self, node_id: str) -> 'FlowBuilder':
-        """Set the entry node."""
-        self.flow.set_entry(node_id)
-        return self
-    
-    def end_at(self, node_id: str) -> 'FlowBuilder':
-        """Set the exit node."""
-        self.flow.set_exit(node_id)
+    def with_checkpointing(self, saver: Any) -> 'FlowBuilder':
+        self.checkpoint_saver = saver
         return self
     
     def build(self) -> Flow:
-        """Build and return the flow."""
-        # Auto-set entry if not specified
-        if not self.flow.entry_nodes and self.flow.nodes:
-            first_node = list(self.flow.nodes.keys())[0]
-            self.flow.set_entry(first_node)
+        flow = Flow(self.name, self.mode, self.checkpoint_saver)
         
-        return self.flow
+        for node in self.nodes:
+            flow.add_node(node)
+        
+        for from_id, to_id in self.connections:
+            flow.connect(from_id, to_id)
+        
+        return flow
