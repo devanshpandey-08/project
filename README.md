@@ -201,6 +201,68 @@ Ready to go deeper? Explore our comprehensive guides:
 
 ---
 
+## 🔄 When to Choose AegisFlow vs. LangChain/LangGraph
+
+AegisFlow is part of the broader AI ecosystem. We believe in using the right tool for the job.
+
+### ✅ Choose **AegisFlow** if:
+- You are building **enterprise workflows** in regulated industries (Finance, Healthcare, Legal).
+- You need **built-in compliance** (SOC2, HIPAA, GDPR) with audit trails and PII redaction.
+- **Data security** is your #1 priority (AES-256 encryption, RBAC, immutable logs).
+- You require **deterministic execution** where every step must be reproducible and auditable.
+- You want **time-travel debugging** and state replay without paying for external tools.
+
+### ✅ Choose **LangChain / LangGraph** if:
+- You are building a **consumer-facing chatbot** where creativity matters more than strict auditability.
+- You need **maximum flexibility** for open-ended agentic behavior (e.g., "Go browse the web and find me the best laptop").
+- **Speed of prototyping** is more important than strict compliance or security guarantees.
+- You are comfortable building your own security, logging, and state management layers.
+
+> **Rule of Thumb:** If a hallucination is acceptable but a data leak is not, choose **AegisFlow**. If you need an autonomous agent to explore the open web freely, choose **LangChain** (or use AegisFlow's **Creative Mode** below).
+
+---
+
+## 🎨 AegisFlow Dual-Mode: Creative & Compliance
+
+New in v1.0.1: AegisFlow now supports **Creative Mode** for open-ended tasks, matching LangChain's flexibility while retaining the option to switch to **Compliance Mode** for production deployment.
+
+### Example: Open-Ended Web Research Agent
+```python
+import asyncio
+from aegisflow.agents import DynamicAgent, AgentMode
+from aegisflow.tools import search_web, scrape_url
+
+async def research_task():
+    # Initialize agent in CREATIVE mode for flexible exploration
+    agent = DynamicAgent(
+        name="Researcher",
+        tools=[search_web, scrape_url],
+        mode=AgentMode.CREATIVE,  # Switch to COMPLIANCE for strict audits
+        max_iterations=15
+    )
+    
+    result = await agent.execute(
+        task="Find the top 3 laptops for software development under $2000 and summarize their pros/cons.",
+        context={}
+    )
+    
+    print(result["result"])
+    # Output: "Based on my research, the top 3 laptops are..."
+
+asyncio.run(research_task())
+```
+
+### Switching to Compliance Mode
+Simply change `mode=AgentMode.COMPLIANCE` to enforce:
+- Strict PII redaction on all tool outputs
+- RBAC checks before executing sensitive tools
+- Immutable audit logging of every thought/action step
+- Validation guards to prevent unsafe actions
+
+This makes AegisFlow the **only framework** that can handle both open-ended consumer agents AND regulated enterprise workflows in the same codebase.
+
+---
+
 ## 🔄 Migration Guide (LangChain → AegisFlow)
 
 | Task | LangChain Code | AegisFlow Code |
@@ -210,6 +272,7 @@ Ready to go deeper? Explore our comprehensive guides:
 | **Human Loop** | `interrupt()` + manual state mgmt | `.add_interrupt(..., pattern=ApprovalPattern)` |
 | **Secure Data** | Manual filters | `config={"encrypt_state": True}` |
 | **Debug** | `print(state)` or LangSmith UI | `flow.replay(checkpoint_id)` |
+| **Open-Ended Agent** | `AgentExecutor` | `DynamicAgent(mode=AgentMode.CREATIVE)` |
 
 ---
 
